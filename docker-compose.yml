@@ -1,0 +1,17 @@
+version: '3.8'
+
+services:
+  app:
+    build: .
+    ports:
+      - "1337:1337"
+      - "3001:3001"
+    volumes:
+      - .:/app
+      - /app/node_modules
+      # Uncomment the following line to share gcloud credentials from host (Linux/Mac)
+      # - ~/.config/gcloud:/root/.config/gcloud
+      # For Windows, you might need to find the specific path or run 'gcloud auth login' inside the container
+    environment:
+      - NODE_ENV=development
+    restart: always
