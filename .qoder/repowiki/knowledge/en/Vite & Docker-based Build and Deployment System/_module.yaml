@@ -1,0 +1,12 @@
+schema_version: 1
+module_path: build_system
+title: Vite & Docker-based Build and Deployment System
+scope: []
+source_files:
+    - package.json
+    - vite.config.js
+    - Dockerfile
+    - docker-compose.yml
+    - server.js
+depends_on: []
+related_to: []

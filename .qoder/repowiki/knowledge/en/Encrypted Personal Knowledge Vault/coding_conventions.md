@@ -1,0 +1,4 @@
+- Components use Tailwind CSS utility classes with custom theme variables (e.g., `bg-theme-panel`, `text-theme-accent`) to support dynamic theming (Liwood, Dark, Cyberpunk).
+- State updates are performed exclusively through a centralized `appReducer` in `App.jsx` using dispatch actions like `ADD_ITEM`, `UPDATE_PROJECT`, and `LOAD`.
+- Cryptographic operations (encryption, decryption, key derivation) are offloaded to a Web Worker or isolated in `src/lib/crypto.js` to prevent UI blocking during heavy computation.
+- UI transitions between major states (Locked/Unlocked) and views utilize `framer-motion`'s `AnimatePresence` for consistent fade and slide effects.

@@ -1,0 +1,11 @@
+schema_version: 1
+module_path: dependency_management
+title: NPM and Vite-based Dependency Management
+scope: []
+source_files:
+    - package.json
+    - package-lock.json
+    - Dockerfile
+    - docker-compose.yml
+depends_on: []
+related_to: []
