@@ -1,0 +1,15 @@
+schema_version: 1
+module_path: configuration_system
+title: Configuration System
+scope: []
+source_files:
+    - vite.config.js
+    - server.js
+    - docker-compose.yml
+    - Dockerfile
+    - tailwind.config.js
+    - package.json
+    - postcss.config.js
+    - eslint.config.js
+depends_on: []
+related_to: []

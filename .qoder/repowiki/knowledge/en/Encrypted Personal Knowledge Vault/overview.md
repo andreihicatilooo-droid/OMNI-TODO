@@ -1,0 +1,1 @@
+A client-side encrypted productivity suite featuring a knowledge base, project management, AI-assisted mind mapping, and image generation with cryptographic data shredding.

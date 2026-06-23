@@ -1,0 +1,3 @@
+- **Development**: Run `npm run dev` to start the Vite development server.
+- **AI Integration**: Requires setting up Google Cloud Application Default Credentials (ADC) via a provided bash script in the Settings view to enable the 'OMNI AI' and Image Generation features.
+- **Duress Mode**: Entering the PIN '6666' triggers `cryptoShred`, which overwrites IndexedDB entries with random garbage before clearing them, permanently destroying local data.
