@@ -1,5 +1,0 @@
-- **Entry Point**: `src/main.jsx` bootstraps the React application into the DOM.
-- **Core Logic**: `src/App.jsx` orchestrates the authentication flow (Lock/Duress) and manages global state via `useReducer`. It implements a `CryptoDBClient` that communicates with an inline Web Worker for off-main-thread IndexedDB operations and AES-GCM/HMAC encryption.
-- **Feature Modules**: `src/components/VaultDashboard.jsx` serves as the primary layout container, routing between sub-views: `BaseView` (notes/tasks), `ProjectsView`, `MindmapView` (using `@xyflow/react`), `OmniView` (AI chat), and `GalleryView`.
-- **Security Layer**: `src/lib/crypto.js` provides utility functions for PBKDF2 key derivation and AES-GCM encryption/decryption, supporting both `localStorage` persistence and `.vault` file export/import.
-- **Styling**: Uses Tailwind CSS with custom theme variables (`bg-theme-bg`, `text-theme-accent`) defined in `tailwind.config.js` and `src/index.css`.

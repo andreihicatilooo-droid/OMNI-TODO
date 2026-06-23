@@ -10,6 +10,14 @@
 - [package.json](file://package.json)
 </cite>
 
+## Update Summary
+**Changes Made**
+- Updated to reflect the rewritten VaultDashboard component with new props interface
+- Added comprehensive documentation for the new state-driven architecture
+- Documented the enhanced view management system with five distinct modes
+- Updated API documentation to match the current implementation
+- Added new sections for BaseView, ProjectsView, OmniView, and GalleryView components
+
 ## Table of Contents
 1. [Introduction](#introduction)
 2. [Project Structure](#project-structure)
@@ -23,10 +31,10 @@
 10. [Appendices](#appendices)
 
 ## Introduction
-This document provides comprehensive API documentation for the VaultDashboard component, which serves as the main application interface for the OMNI-TODO system. The component manages multiple views (notes, projects, mindmaps, gallery, settings), integrates with an encrypted database client, and orchestrates user interactions for secure note management, project tracking, and media gallery operations.
+This document provides comprehensive API documentation for the VaultDashboard component, which serves as the main application interface for the OMNI-TODO system. The component manages multiple integrated views (Base, Projects, Mindmaps, OMNI AI, Gallery, Settings), operates with a centralized state management system, and orchestrates user interactions for knowledge management, project tracking, and creative workflows.
 
 ## Project Structure
-The VaultDashboard resides in the components directory alongside supporting views and utilities. It integrates with the main application through a client abstraction that handles cryptographic operations and IndexedDB persistence.
+The VaultDashboard component is part of a modern React application with a sophisticated state management architecture. It integrates with a reducer-based system that manages all application state including items, projects, mindmaps, gallery, and settings.
 
 ```mermaid
 graph TB
@@ -34,33 +42,31 @@ subgraph "Application Layer"
 App[App.jsx]
 Dashboard[VaultDashboard.jsx]
 end
-subgraph "Views"
-Notes[Notes View]
-Projects[Projects View]
-Mindmap[Mindmap View]
-Gallery[Gallery View]
-Settings[Settings View]
-Omni[Omni AI View]
+subgraph "Integrated Views"
+Base[BaseView]
+Projects[ProjectsView]
+Mindmap[MindmapView]
+Gallery[GalleryView]
+Settings[SettingsView]
+Omni[OmniView]
 end
-subgraph "Integration Layer"
-Client[CryptoDBClient]
-Crypto[crypto.js]
-DB[(IndexedDB)]
+subgraph "State Management"
+Reducer[appReducer]
+State[Global State]
 end
 App --> Dashboard
-Dashboard --> Notes
+Dashboard --> Base
 Dashboard --> Projects
 Dashboard --> Mindmap
 Dashboard --> Gallery
 Dashboard --> Settings
 Dashboard --> Omni
-Dashboard --> Client
-Client --> Crypto
-Client --> DB
+Dashboard --> Reducer
+Reducer --> State
 ```
 
 **Diagram sources**
-- [App.jsx:204-257](file://src/App.jsx#L204-L257)
+- [App.jsx:308-441](file://src/App.jsx#L308-L441)
 - [VaultDashboard.jsx:1389-1540](file://src/components/VaultDashboard.jsx#L1389-L1540)
 
 **Section sources**
@@ -68,7 +74,7 @@ Client --> DB
 - [index.css:7-50](file://src/index.css#L7-L50)
 
 ## Core Components
-The VaultDashboard component is structured around several key subsystems:
+The VaultDashboard component is structured around a comprehensive state-driven architecture with six integrated view modes:
 
 ### Props Interface
 The component accepts the following props:
@@ -78,47 +84,45 @@ The component accepts the following props:
 - `onExportVault`: Callback function to export encrypted vault data
 
 ### State Management
-Internal component state includes:
-- `activeTab`: Current active view/tab
+The component maintains minimal internal state focused on UI controls:
+- `activeTab`: Currently active view/tab (base, projects, mindmap, omni, gallery, settings)
 - `isMobileMenuOpen`: Mobile navigation menu state
-- `isSidebarCollapsed`: Sidebar collapse state
-- Local view-specific state managed within individual view components
+- `isSidebarCollapsed`: Sidebar collapse state for responsive design
 
 ### View Modes
-The dashboard supports five distinct view modes:
-- Base: Note-taking and editing interface
-- Projects: Project management and tracking
-- Mindmap: Interactive mind mapping with AI integration
-- Omni: Personal AI assistant interface
-- Gallery: Image generation and management
-- Settings: Application configuration and data management
+The dashboard supports six distinct integrated view modes:
+- **Base**: Comprehensive note-taking and knowledge management system
+- **Projects**: Project management and tracking with progress visualization
+- **Mindmap**: Interactive mind mapping with AI-powered generation
+- **OMNI AI**: Personal AI assistant with automated task extraction
+- **Gallery**: AI-powered image generation and management
+- **Settings**: Application configuration and data management
 
 **Section sources**
 - [VaultDashboard.jsx:1389-1540](file://src/components/VaultDashboard.jsx#L1389-L1540)
 
 ## Architecture Overview
-The VaultDashboard operates as a container component that manages view switching and delegates functionality to specialized view components. It maintains a clean separation between presentation and business logic through the use of a centralized state management system.
+The VaultDashboard operates as a container component that manages view switching and delegates functionality to specialized view components. It maintains a clean separation between presentation and business logic through a centralized reducer-based state management system.
 
 ```mermaid
 sequenceDiagram
 participant User as User
 participant Dashboard as VaultDashboard
 participant View as Active View
-participant Client as CryptoDBClient
-participant DB as IndexedDB
+participant Reducer as appReducer
+participant Storage as Local Storage
 User->>Dashboard : Select view/tab
 Dashboard->>Dashboard : Update activeTab state
 Dashboard->>View : Render selected view component
-View->>Client : Execute encrypted operation
-Client->>DB : Perform database transaction
-DB-->>Client : Return encrypted data
-Client-->>View : Return decrypted content
+View->>Reducer : Dispatch action
+Reducer->>Storage : Persist state changes
+Storage-->>Reducer : Return updated state
+Reducer-->>View : Provide new state
 View-->>Dashboard : Update UI state
-Note over Dashboard,DB : All operations use AES-GCM encryption
 ```
 
 **Diagram sources**
-- [App.jsx:167-190](file://src/App.jsx#L167-L190)
+- [App.jsx:308-441](file://src/App.jsx#L308-L441)
 - [VaultDashboard.jsx:1389-1540](file://src/components/VaultDashboard.jsx#L1389-L1540)
 
 ## Detailed Component Analysis
@@ -163,85 +167,93 @@ The component implements a sophisticated view management system with the followi
 - Tab-based navigation with persistent sidebar
 - Mobile-responsive design with collapsible sidebar
 - Smooth transitions between view modes using Framer Motion
+- Integrated mobile menu for touch devices
 
 #### Data Display Logic
 Each view implements its own filtering, sorting, and display logic:
-- Notes view: Tag-based filtering, search functionality, recent-first sorting
-- Projects view: Status-based filtering, progress tracking
-- Mindmap view: Interactive graph rendering with AI-powered generation
-- Gallery view: Image grid with modal expansion and prompt-based generation
-- Settings view: Configuration panels with validation
+- **Base View**: Comprehensive note-taking with type categorization (ideas, tasks, interesting, links)
+- **Projects View**: Project lifecycle management with progress tracking and issue management
+- **Mindmap View**: Interactive graph creation with AI-powered generation and manual editing
+- **Gallery View**: AI image generation with modal expansion and prompt-based management
+- **Settings View**: Configuration panels with validation and data export/import
+- **OMNI AI View**: Personal assistant with automated task extraction and action execution
 
-### Integration with CryptoDBClient
-The component integrates with a dedicated client for encrypted data operations:
+### Integration with State Management
+The component integrates with a centralized reducer system for all data operations:
 
-#### Encrypted Data Operations
-The client provides methods for secure data handling:
-- `LOAD_CONTENT`: Retrieve and decrypt note content
-- `SAVE_NOTE`: Encrypt and store note metadata and content
-- `DELETE_NOTE`: Mark notes as deleted with tombstone pattern
-- `EXPORT_VAULT`: Export complete encrypted backup
-- `IMPORT_VAULT`: Import and merge encrypted backups
-
-#### Security Implementation
-Data encryption uses AES-GCM with PBKDF2 key derivation:
-- 256-bit AES-GCM encryption
-- HMAC-SHA-256 integrity verification
-- Random salt and IV generation
-- Secure key derivation with 250,000 iterations
-
-**Section sources**
-- [App.jsx:167-190](file://src/App.jsx#L167-L190)
-- [crypto.js:20-38](file://src/lib/crypto.js#L20-L38)
-
-### Note Management APIs
-The notes management system provides comprehensive CRUD operations:
-
-#### Adding Notes
-- Automatic ID generation using timestamp-based unique identifiers
-- Initial metadata creation with timestamps and empty content
-- Immediate synchronization with encrypted storage
-
-#### Updating Notes
-- Debounced auto-save mechanism (1.5 second delay)
-- Real-time tag extraction from content
-- Preview generation for list display
-- Conflict resolution through last-write-wins strategy
-
-#### Deleting Notes
-- Confirmation dialog for destructive operations
-- Tombstone pattern implementation for data retention
-- Automatic cleanup of associated content
-
-#### Search and Filtering
-- Full-text search across titles, previews, and tags
-- Tag-based filtering with active tag highlighting
-- Case-insensitive matching with diacritic normalization
-- Live filtering during user input
-
-**Section sources**
-- [VaultDashboard.jsx:276-316](file://src/components/VaultDashboard.jsx#L276-L316)
-- [VaultDashboard.jsx:29-134](file://src/components/VaultDashboard.jsx#L29-L134)
-
-### Project Tracking Methods
-The projects view implements a comprehensive project management system:
-
-#### Project Lifecycle
-- Creation with default status and progress tracking
-- Expansion/collapse for detailed views
-- Progress visualization with animated bars
-- Issue management integration points
+#### State Operations
+The reducer provides methods for comprehensive CRUD operations:
+- `ADD_ITEM`: Create new knowledge entries with automatic ID generation
+- `UPDATE_ITEM`: Update existing entries with conflict resolution
+- `DELETE_ITEM`: Remove entries with proper cleanup
+- `ADD_PROJECT`: Create new projects with default status and progress
+- `UPDATE_PROJECT`: Modify project details and progress
+- `DELETE_PROJECT`: Remove projects and associated data
+- `ADD_MINDMAP`: Create new mindmap structures
+- `UPDATE_MINDMAP`: Edit mindmap nodes and connections
+- `DELETE_MINDMAP`: Remove mindmaps
+- `ADD_IMAGE`: Add generated images to gallery
+- `DELETE_IMAGE`: Remove images from gallery
+- `UPDATE_SETTINGS`: Modify application preferences
+- `ADD_CERBER_MSG`: Store OMNI AI conversation history
+- `LOAD`: Initialize state from encrypted storage
 
 #### State Persistence
-- Project data stored in global state
-- Automatic saving through reducer actions
+All state changes are automatically persisted to encrypted local storage:
+- Automatic save on state changes
+- Encryption using AES-GCM with PBKDF2 key derivation
+- Secure key management with random salts and iterations
+- Integrity verification through HMAC-SHA-256
+
+**Section sources**
+- [App.jsx:308-441](file://src/App.jsx#L308-L441)
+- [crypto.js:20-38](file://src/lib/crypto.js#L20-L38)
+
+### Base View - Comprehensive Knowledge Management
+The BaseView provides a sophisticated note-taking and knowledge management system:
+
+#### Entry Types and Management
+- **Ideas**: Creative thoughts and inspiration
+- **Tasks**: Actionable items with status tracking
+- **Interesting**: Curated content and resources
+- **Links**: External URLs and references
+
+#### Entry Operations
+- Automatic ID generation using timestamp-based unique identifiers
+- Type-based categorization with visual indicators
+- Rich text editing with markdown-like features
+- Status management for tasks (open, in-progress, completed)
+- Priority levels for task organization
+
+#### Search and Organization
+- Full-text search across titles, descriptions, and URLs
+- Type-based filtering with visual category indicators
+- Recent-first sorting with timestamp-based ordering
+- Responsive sidebar with collapsible sections
+
+**Section sources**
+- [VaultDashboard.jsx:524-744](file://src/components/VaultDashboard.jsx#L524-L744)
+
+### Project Tracking Methods
+The ProjectsView implements a comprehensive project management system:
+
+#### Project Lifecycle
+- Creation with default status (planning) and zero progress
+- Expansion/collapse for detailed views with progress visualization
+- Issue management integration points
+- Timeline tracking with creation dates
+
+#### State Persistence
+- Project data stored in global state with automatic saving
+- Progress visualization with animated progress bars
+- Issue count tracking and display
 - Timestamp-based ordering and filtering
 
 **Section sources**
 - [VaultDashboard.jsx:912-1033](file://src/components/VaultDashboard.jsx#L912-L1033)
 
 ### Gallery Manipulation Functions
-The gallery view provides AI-powered image generation and management:
+The GalleryView provides AI-powered image generation and management:
 
 #### Image Generation
 - Prompt-based image generation via external API
@@ -251,7 +263,7 @@ The gallery view provides AI-powered image generation and management:
 
 #### Gallery Operations
 - Grid-based image display with hover effects
-- Modal expansion for detailed viewing
+- Modal expansion for detailed viewing with prompt display
 - Individual image deletion with confirmation
 - Creation timestamp and prompt preservation
 
@@ -259,7 +271,7 @@ The gallery view provides AI-powered image generation and management:
 - [VaultDashboard.jsx:1036-1186](file://src/components/VaultDashboard.jsx#L1036-L1186)
 
 ### Settings Management
-The settings view provides comprehensive configuration options:
+The SettingsView provides comprehensive configuration options:
 
 #### Application Settings
 - Theme selection (Liwood, Dark, Cyberpunk)
@@ -276,24 +288,23 @@ The settings view provides comprehensive configuration options:
 **Section sources**
 - [VaultDashboard.jsx:1189-1386](file://src/components/VaultDashboard.jsx#L1189-L1386)
 
-### Mindmap Integration
-The component integrates with the MindmapView for interactive graph creation:
+### OMNI AI Integration
+The component integrates with the OmniView for intelligent task extraction and automation:
 
-#### AI-Powered Generation
-- Text-to-mindmap conversion via external API
-- JSON parsing with validation
-- Automatic node positioning algorithms
-- Edge connection generation
+#### AI-Powered Task Extraction
+- Natural language processing for task identification
+- Automated project suggestion extraction
+- Structured action execution with user confirmation
+- Conversation history management
 
-#### Interactive Editing
-- Drag-and-drop node manipulation
-- Edge creation and deletion
-- Real-time state synchronization
-- Theme-aware rendering
+#### Interactive Features
+- Real-time conversation interface with typing indicators
+- Action buttons for executing extracted tasks
+- Error handling for AI service failures
+- Loading states and user feedback
 
 **Section sources**
-- [MindmapView.jsx:78-152](file://src/components/MindmapView.jsx#L78-L152)
-- [VaultDashboard.jsx:445-453](file://src/components/VaultDashboard.jsx#L445-L453)
+- [VaultDashboard.jsx:747-907](file://src/components/VaultDashboard.jsx#L747-L907)
 
 ## Dependency Analysis
 The VaultDashboard component has well-defined dependencies and integration points:
@@ -305,19 +316,11 @@ React[React ^19.2.6]
 Motion[Framer Motion ^12.40.0]
 Lucide[Lucide React ^1.21.0]
 XYFlow[@xyflow/react ^12.11.1]
-end
-subgraph "Internal Dependencies"
-Dashboard[VaultDashboard.jsx]
-Mindmap[MindmapView.jsx]
-Crypto[crypto.js]
-App[App.jsx]
-end
-Dashboard --> Mindmap
-Dashboard --> Crypto
-Dashboard --> App
-Mindmap --> XYFlow
-Dashboard --> Motion
-Dashboard --> Lucide
+GoogleAuth[google-auth-library ^10.7.0]
+Express[express ^5.2.1]
+Cors[cors ^2.8.6]
+Dotenv[dotenv ^17.4.2]
+ThreeJS[three ^0.184.0]
 ```
 
 **Diagram sources**
@@ -331,10 +334,10 @@ Dashboard --> Lucide
 - Minimal circular dependencies
 
 ### Integration Points
-- CryptoDBClient for all encrypted operations
-- Global state management through reducer pattern
+- Centralized state management through reducer pattern
 - Theme system through CSS custom properties
 - Responsive design through Tailwind utilities
+- AI services through external API integrations
 
 **Section sources**
 - [package.json:12-24](file://package.json#L12-L24)
@@ -364,10 +367,10 @@ The component implements several performance optimization strategies:
 ## Troubleshooting Guide
 
 ### Common Issues and Solutions
-- **Encryption errors**: Verify password correctness and key derivation
-- **Database connectivity**: Check IndexedDB availability and permissions
-- **View rendering**: Ensure proper state initialization and prop passing
-- **Theme issues**: Verify CSS custom property definitions and theme switching
+- **State persistence errors**: Verify local storage availability and encryption keys
+- **View rendering issues**: Ensure proper state initialization and prop passing
+- **Theme problems**: Check CSS custom property definitions and theme switching
+- **AI service failures**: Verify API connectivity and authentication
 
 ### Error Handling Patterns
 The component implements comprehensive error handling:
@@ -383,11 +386,11 @@ The component implements comprehensive error handling:
 - Validate encryption keys and database integrity
 
 **Section sources**
-- [App.jsx:216-233](file://src/App.jsx#L216-L233)
+- [App.jsx:308-441](file://src/App.jsx#L308-L441)
 - [VaultDashboard.jsx:141-171](file://src/components/VaultDashboard.jsx#L141-L171)
 
 ## Conclusion
-The VaultDashboard component provides a robust, secure, and feature-rich interface for the OMNI-TODO system. Its modular architecture, comprehensive encryption support, and intuitive user interface make it suitable for both personal and professional knowledge management tasks. The component's design emphasizes security, performance, and maintainability while providing extensive functionality for note management, project tracking, and creative workflows.
+The VaultDashboard component provides a robust, integrated, and feature-rich interface for the OMNI-TODO system. Its modular architecture, comprehensive state management, and seamless integration of AI-powered features make it suitable for both personal knowledge management and collaborative project workflows. The component's design emphasizes usability, performance, and maintainability while providing extensive functionality for creative and organizational tasks.
 
 ## Appendices
 
@@ -395,7 +398,7 @@ The VaultDashboard component provides a robust, secure, and feature-rich interfa
 - **Props**: state, dispatch, onLock, onExportVault
 - **Methods**: View switching, data operations, settings management
 - **Events**: User interactions, state changes, error conditions
-- **Security**: AES-GCM encryption, HMAC integrity, secure key derivation
+- **State Operations**: ADD_ITEM, UPDATE_ITEM, DELETE_ITEM, ADD_PROJECT, UPDATE_PROJECT, DELETE_PROJECT, ADD_MINDMAP, UPDATE_MINDMAP, DELETE_MINDMAP, ADD_IMAGE, DELETE_IMAGE, UPDATE_SETTINGS, ADD_CERBER_MSG, LOAD
 
 ### Usage Examples
 The component is designed for easy integration:

@@ -3,41 +3,19 @@ schema_version: 1
 locale: en-US
 branch: main
 nodes_managed: true
-exported_at: "2026-06-23T13:48:24Z"
+exported_at: "2026-06-23T15:05:45Z"
 modules:
     "":
-        dir_name: Encrypted Personal Knowledge Vault
+        dir_name: Encrypted Personal Knowledge Vault_2
         title: Encrypted Personal Knowledge Vault
         scope:
-            - src/
-            - README.md
-            - .gitignore
-            - .dockerignore
-            - Dockerfile
-            - docker-compose.yml
-            - eslint.config.js
-            - index.html
-            - package.json
-            - package-lock.json
-            - postcss.config.js
-            - server.js
+            - '**'
+        source_files:
             - tailwind.config.js
-            - vite.config.js
-            - public\favicon.svg
-            - public\icons.svg
-            - src\App.css
-            - src\App.jsx
-            - src\assets\hero.png
-            - src\assets\react.svg
-            - src\assets\vite.svg
-            - src\components\LockScreen.jsx
-            - src\components\MindmapView.jsx
-            - src\components\ShaderBG.jsx
-            - src\components\VaultDashboard.jsx
-            - src\index.css
-            - src\lib\crypto.js
-            - src\main.jsx
-        source_files: []
+            - src/index.css
+            - postcss.config.js
+            - src/App.jsx
+            - package.json
         children: []
         depends_on: []
         related_to: []
@@ -55,7 +33,7 @@ modules:
         depends_on: []
         related_to: []
     configuration_system:
-        dir_name: Configuration System
+        dir_name: Configuration System_2
         title: Configuration System
         scope: []
         source_files:
@@ -71,7 +49,7 @@ modules:
         depends_on: []
         related_to: []
     dependency_management:
-        dir_name: NPM and Vite-based Dependency Management
+        dir_name: NPM and Vite-based Dependency Management_2
         title: NPM and Vite-based Dependency Management
         scope: []
         source_files:
@@ -95,16 +73,15 @@ modules:
         children: []
         depends_on: []
         related_to: []
-    frontend_style:
-        dir_name: Tailwind CSS with CSS Variable Theming and Glassmorphism
-        title: Tailwind CSS with CSS Variable Theming and Glassmorphism
+    logging_system:
+        dir_name: Ad-hoc Console Logging Without Structured Framework
+        title: Ad-hoc Console Logging Without Structured Framework
         scope: []
         source_files:
-            - tailwind.config.js
-            - src/index.css
-            - postcss.config.js
+            - server.js
             - src/App.jsx
-            - package.json
+            - src/components/MindmapView.jsx
+            - src/lib/crypto.js
         children: []
         depends_on: []
         related_to: []

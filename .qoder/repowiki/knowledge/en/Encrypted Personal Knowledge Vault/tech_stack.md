@@ -1,5 +1,0 @@
-- **Frontend Framework**: React 19 with Vite build tooling.
-- **State & UI**: `framer-motion` for complex animations; `lucide-react` for iconography.
-- **Visualization**: `@xyflow/react` for interactive mind maps; `three.js` for background shaders (`ShaderBG`).
-- **Cryptography**: Web Crypto API (AES-GCM, HMAC-SHA-256, PBKDF2) implemented in a Web Worker for non-blocking encryption.
-- **Storage**: IndexedDB for session-based encrypted storage; `localStorage` for vault metadata.

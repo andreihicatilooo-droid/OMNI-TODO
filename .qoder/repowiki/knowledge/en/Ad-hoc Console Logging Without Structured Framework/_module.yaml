@@ -1,0 +1,11 @@
+schema_version: 1
+module_path: logging_system
+title: Ad-hoc Console Logging Without Structured Framework
+scope: []
+source_files:
+    - server.js
+    - src/App.jsx
+    - src/components/MindmapView.jsx
+    - src/lib/crypto.js
+depends_on: []
+related_to: []

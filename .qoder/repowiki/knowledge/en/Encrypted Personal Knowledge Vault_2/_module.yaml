@@ -1,7 +1,8 @@
 schema_version: 1
-module_path: frontend_style
-title: Tailwind CSS with CSS Variable Theming and Glassmorphism
-scope: []
+module_path: ""
+title: Encrypted Personal Knowledge Vault
+scope:
+    - '**'
 source_files:
     - tailwind.config.js
     - src/index.css
