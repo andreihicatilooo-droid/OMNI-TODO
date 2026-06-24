@@ -1,515 +1,8 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
-import {
-  Menu, Database, Settings, Search, Hash, Lock, Download, Upload,
-  ShieldAlert, CheckCircle2, Trash2, Plus, X, Tag, Network,
-  Send, GitBranch
-} from 'lucide-react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
+import { Menu, X, Settings, Plus, Search, Trash2, Pin, Share2, GitBranch, Clock, LogOut, KeyRound, Bot, Send, Image as ImageIcon, Loader2, XCircle, Lock, Database, Download, Upload, Network, CheckCircle, Eye, Pencil, Link2, Hash, FileText, ArrowUpRight, CornerDownLeft, Command } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import MindmapView from './MindmapView';
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-const extractTags = (text) => {
-  const matches = (text || '').match(/#[\wа-яёА-ЯЁ]+/gu) || [];
-  return [...new Set(matches)];
-};
-
-const formatDate = (ts) => {
-  if (!ts) return '';
-  const d = new Date(ts);
-  const diff = Date.now() - d;
-  if (diff < 60_000) return 'только что';
-  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)} мин назад`;
-  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)} ч назад`;
-  return d.toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' });
-};
-
-const uid = () => `n_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-
-// ── Sidebar note list ─────────────────────────────────────────────────────────
-const NoteList = ({ notes, selectedId, onSelect, onDelete, onCreate, search, setSearch, activeTag, setActiveTag }) => {
-  const allTags = [...new Set(notes.flatMap(n => n.tags || []))].sort();
-
-  const filtered = notes
-    .filter(n => {
-      const q = search.toLowerCase();
-      const matchSearch = !q ||
-        (n.title || '').toLowerCase().includes(q) ||
-        (n.preview || '').toLowerCase().includes(q) ||
-        (n.tags || []).some(t => t.toLowerCase().includes(q));
-      const matchTag = !activeTag || (n.tags || []).includes(activeTag);
-      return matchSearch && matchTag;
-    })
-    .sort((a, b) => (b.updated || 0) - (a.updated || 0));
-
-  return (
-    <div className="flex flex-col h-full">
-      {/* Search */}
-      <div className="p-3 border-b border-theme-border shrink-0">
-        <div className="relative">
-          <Search size={13} className="absolute left-3 top-2.5 text-theme-muted pointer-events-none" />
-          <input
-            type="text"
-            value={search}
-            onChange={e => setSearch(e.target.value)}
-            placeholder="Поиск..."
-            className="w-full bg-theme-bg border border-theme-border rounded-lg pl-8 pr-3 py-2 text-sm text-theme-text placeholder-theme-muted/40 focus:outline-none focus:border-theme-accent"
-          />
-        </div>
-      </div>
-
-      {/* Tags */}
-      {allTags.length > 0 && (
-        <div className="px-3 py-2 border-b border-theme-border flex flex-wrap gap-1 shrink-0">
-          {activeTag ? (
-            <button
-              onClick={() => setActiveTag(null)}
-              className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-theme-accent/20 text-theme-accent text-[11px] border border-theme-accent/30"
-            >
-              <X size={9} /> {activeTag}
-            </button>
-          ) : allTags.slice(0, 7).map(tag => (
-            <button
-              key={tag}
-              onClick={() => setActiveTag(tag)}
-              className="flex items-center gap-1 px-2 py-0.5 rounded-full bg-theme-panel text-theme-muted text-[11px] border border-theme-border hover:text-theme-accent hover:border-theme-accent/30 transition-colors"
-            >
-              <Hash size={9} />{tag.slice(1)}
-            </button>
-          ))}
-        </div>
-      )}
-
-      {/* List */}
-      <div className="flex-1 overflow-y-auto custom-scrollbar p-2 space-y-0.5">
-        {filtered.map(note => (
-          <div
-            key={note.id}
-            onClick={() => onSelect(note.id)}
-            className={`group relative p-3 rounded-xl cursor-pointer transition-all border ${
-              selectedId === note.id
-                ? 'bg-theme-accent/10 border-theme-accent/30 text-theme-text'
-                : 'border-transparent hover:bg-theme-panel/80 text-theme-muted hover:text-theme-text'
-            }`}
-          >
-            <div className="flex items-start justify-between gap-1">
-              <p className="text-sm font-medium truncate leading-snug">{note.title || 'Без названия'}</p>
-              <button
-                onClick={(e) => { e.stopPropagation(); onDelete(note.id); }}
-                className="opacity-0 group-hover:opacity-100 p-0.5 text-theme-muted hover:text-red-400 transition-all shrink-0 mt-0.5"
-              >
-                <Trash2 size={12} />
-              </button>
-            </div>
-            {note.preview && (
-              <p className="text-xs text-theme-muted/60 mt-0.5 truncate">{note.preview}</p>
-            )}
-            <div className="flex items-center justify-between mt-1.5">
-              <div className="flex gap-1 flex-wrap">
-                {(note.tags || []).slice(0, 2).map(t => (
-                  <span key={t} className="text-[10px] text-theme-accent/50 font-mono">{t}</span>
-                ))}
-              </div>
-              <span className="text-[10px] text-theme-muted/40 shrink-0">{formatDate(note.updated)}</span>
-            </div>
-          </div>
-        ))}
-        {filtered.length === 0 && (
-          <div className="py-10 text-center text-theme-muted/40 text-sm">
-            {search ? 'Ничего не найдено' : 'Нет заметок'}
-          </div>
-        )}
-      </div>
-
-      {/* New note */}
-      <div className="p-3 border-t border-theme-border shrink-0">
-        <button
-          onClick={onCreate}
-          className="w-full py-2 rounded-xl bg-theme-accent/10 hover:bg-theme-accent/20 text-theme-accent border border-theme-accent/20 hover:border-theme-accent/40 text-sm font-semibold transition-all flex items-center justify-center gap-2"
-        >
-          <Plus size={14} /> Новая заметка
-        </button>
-      </div>
-    </div>
-  );
-};
-
-// ── Settings panel ────────────────────────────────────────────────────────────
-const SettingsPanel = ({ client, notes, onLock, onNotesChange }) => {
-  const [status, setStatus] = useState(''); // 'ok' | 'error' | 'exporting'
-  const importRef = useRef(null);
-
-  const handleExport = async () => {
-    setStatus('exporting');
-    try {
-      const buffer = await client.exec('EXPORT_VAULT');
-      const blob = new Blob([buffer], { type: 'application/octet-stream' });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `vault_${new Date().toISOString().split('T')[0]}.vault`;
-      a.click();
-      URL.revokeObjectURL(url);
-      setStatus('export_ok');
-    } catch {
-      setStatus('error');
-    } finally {
-      setTimeout(() => setStatus(''), 3000);
-    }
-  };
-
-  const handleImport = async (file) => {
-    try {
-      const buffer = await file.arrayBuffer();
-      const updatedMeta = await client.exec('IMPORT_VAULT', { fileBuffer: buffer });
-      onNotesChange(updatedMeta || []);
-      setStatus('ok');
-    } catch {
-      setStatus('error');
-    } finally {
-      setTimeout(() => setStatus(''), 3000);
-    }
-  };
-
-  return (
-    <div className="flex-1 overflow-y-auto custom-scrollbar p-4 space-y-5">
-      <p className="text-[10px] font-mono text-theme-muted uppercase tracking-widest">Данные</p>
-
-      <button
-        onClick={handleExport}
-        className="w-full flex items-center gap-3 p-3 rounded-xl bg-theme-panel/50 hover:bg-theme-panel border border-theme-border hover:border-theme-accent/30 text-theme-text text-sm transition-all"
-      >
-        <Download size={15} className="text-theme-accent shrink-0" />
-        <div className="text-left">
-          <p className="font-medium text-sm">Экспорт .vault</p>
-          <p className="text-[11px] text-theme-muted">Зашифрованный бэкап</p>
-        </div>
-      </button>
-
-      <label className="w-full flex items-center gap-3 p-3 rounded-xl bg-theme-panel/50 hover:bg-theme-panel border border-theme-border hover:border-theme-accent/30 text-theme-text text-sm transition-all cursor-pointer">
-        <Upload size={15} className="text-theme-accent shrink-0" />
-        <div className="text-left">
-          <p className="font-medium text-sm">Импорт .vault</p>
-          <p className="text-[11px] text-theme-muted">CRDT LWW merge</p>
-        </div>
-        <input
-          ref={importRef}
-          type="file"
-          accept=".vault"
-          className="hidden"
-          onChange={e => { const f = e.target.files?.[0]; if (f) handleImport(f); e.target.value = ''; }}
-        />
-      </label>
-
-      {status === 'ok' && (
-        <div className="flex items-center gap-2 text-green-400 text-xs bg-green-500/10 border border-green-500/20 rounded-lg p-2">
-          <CheckCircle2 size={12} /> Импорт выполнен
-        </div>
-      )}
-      {status === 'export_ok' && (
-        <div className="flex items-center gap-2 text-green-400 text-xs bg-green-500/10 border border-green-500/20 rounded-lg p-2">
-          <CheckCircle2 size={12} /> Экспорт сохранён
-        </div>
-      )}
-      {status === 'error' && (
-        <div className="flex items-center gap-2 text-red-400 text-xs bg-red-500/10 border border-red-500/20 rounded-lg p-2">
-          <ShieldAlert size={12} /> Ошибка: неверный ключ или файл
-        </div>
-      )}
-
-      <div className="pt-4 border-t border-theme-border">
-        <p className="text-[10px] font-mono text-theme-muted uppercase tracking-widest mb-3">Сессия</p>
-        <button
-          onClick={onLock}
-          className="w-full flex items-center gap-3 p-3 rounded-xl bg-theme-panel/50 hover:bg-red-500/10 border border-theme-border hover:border-red-500/30 text-theme-text hover:text-red-400 text-sm transition-all"
-        >
-          <Lock size={15} className="shrink-0" />
-          <span className="font-medium">Заблокировать</span>
-        </button>
-      </div>
-
-      <div className="pt-4 border-t border-theme-border space-y-1 text-[10px] font-mono text-theme-muted/35">
-        <p>OMNI_VAULT v3.0 · {notes.length} заметок</p>
-        <p>AES-GCM-256 + HMAC-SHA-256</p>
-        <p>CRDT LWW MERGE · IndexedDB · SubtleCrypto</p>
-      </div>
-    </div>
-  );
-};
-
-// ── VaultDashboard ─────────────────────────────────────────────────────────────
-const VaultDashboard = ({ client, initialNotes, onLock, onNotesChange }) => {
-  const [notes, setNotes] = useState(initialNotes || []);
-  const [activeTab, setActiveTab] = useState('notes'); // 'notes' | 'mindmap' | 'settings'
-  const [selectedId, setSelectedId] = useState(null);
-  const [title, setTitle] = useState('');
-  const [content, setContent] = useState('');
-  const [search, setSearch] = useState('');
-  const [activeTag, setActiveTag] = useState(null);
-  const [saving, setSaving] = useState(false);
-  const [saveStatus, setSaveStatus] = useState(''); // 'saved' | 'error'
-  const [sidebarOpen, setSidebarOpen] = useState(true);
-
-  const isDirtyRef = useRef(false);
-  const saveTimerRef = useRef(null);
-
-  // Sync notes to parent
-  useEffect(() => { onNotesChange?.(notes); }, [notes]);
-
-  // Load content on note selection
-  useEffect(() => {
-    if (!selectedId) { setTitle(''); setContent(''); return; }
-    const meta = notes.find(n => n.id === selectedId);
-    if (meta) setTitle(meta.title || '');
-    client.exec('LOAD_CONTENT', { noteId: selectedId })
-      .then(c => { setContent(c || ''); isDirtyRef.current = false; })
-      .catch(() => setContent(''));
-  }, [selectedId]);
-
-  // Auto-save debounce (1.5 s)
-  useEffect(() => {
-    if (!selectedId || !isDirtyRef.current) return;
-    clearTimeout(saveTimerRef.current);
-    saveTimerRef.current = setTimeout(saveNote, 1500);
-    return () => clearTimeout(saveTimerRef.current);
-  }, [title, content]);
-
-  const saveNote = useCallback(async () => {
-    if (!selectedId) return;
-    setSaving(true);
-    try {
-      const tags = extractTags(content + ' ' + title);
-      const existing = notes.find(n => n.id === selectedId);
-      const meta = {
-        id: selectedId,
-        title: title || 'Без названия',
-        tags,
-        preview: content.replace(/#[\wа-яёА-ЯЁ]+/gu, '').trim().slice(0, 110),
-        updated: Date.now(),
-        created: existing?.created || Date.now(),
-      };
-      await client.exec('SAVE_NOTE', { meta, content });
-      setNotes(prev => prev.map(n => n.id === selectedId ? meta : n));
-      setSaveStatus('saved');
-      isDirtyRef.current = false;
-      setTimeout(() => setSaveStatus(''), 2000);
-    } catch {
-      setSaveStatus('error');
-    } finally {
-      setSaving(false);
-    }
-  }, [selectedId, title, content, notes, client]);
-
-  const createNote = async () => {
-    const id = uid();
-    const meta = { id, title: 'Новая заметка', tags: [], preview: '', updated: Date.now(), created: Date.now() };
-    await client.exec('SAVE_NOTE', { meta, content: '' });
-    setNotes(prev => [meta, ...prev]);
-    setSelectedId(id);
-    setActiveTab('notes');
-  };
-
-  const deleteNote = async (noteId) => {
-    if (!confirm('Удалить заметку?')) return;
-    await client.exec('DELETE_NOTE', { noteId });
-    setNotes(prev => prev.filter(n => n.id !== noteId));
-    if (selectedId === noteId) setSelectedId(null);
-  };
-
-  const activeTags = selectedId ? extractTags(content + ' ' + title) : [];
-
-  const navItems = [
-    { id: 'notes', icon: Database, label: 'Заметки' },
-    { id: 'mindmap', icon: Network, label: 'Mindmap' },
-    { id: 'settings', icon: Settings, label: 'Настройки' },
-  ];
-
-  return (
-    <div className="h-screen flex overflow-hidden bg-theme-bg text-theme-text relative z-10">
-
-      {/* ── Sidebar ─────────────────────────────────────────────────────── */}
-      <AnimatePresence initial={false}>
-        {sidebarOpen && (
-          <motion.aside
-            key="sidebar"
-            initial={{ width: 0, opacity: 0 }}
-            animate={{ width: 272, opacity: 1 }}
-            exit={{ width: 0, opacity: 0 }}
-            transition={{ duration: 0.2 }}
-            className="shrink-0 flex flex-col border-r border-theme-border bg-theme-panel/40 backdrop-blur-sm overflow-hidden"
-          >
-            {/* Sidebar header */}
-            <div className="px-4 py-3 border-b border-theme-border flex items-center justify-between shrink-0">
-              <span className="font-serif font-black tracking-[0.18em] uppercase text-theme-text text-xs">OMNI VAULT</span>
-              <div className="flex gap-0.5">
-                {navItems.map(({ id, icon: Icon, label }) => (
-                  <button
-                    key={id}
-                    onClick={() => setActiveTab(id)}
-                    title={label}
-                    className={`p-1.5 rounded-lg transition-all ${activeTab === id ? 'bg-theme-accent/15 text-theme-accent' : 'text-theme-muted hover:text-theme-text hover:bg-theme-text/5'}`}
-                  >
-                    <Icon size={15} />
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {/* Sidebar body */}
-            {activeTab === 'notes' && (
-              <NoteList
-                notes={notes}
-                selectedId={selectedId}
-                onSelect={setSelectedId}
-                onDelete={deleteNote}
-                onCreate={createNote}
-                search={search}
-                setSearch={setSearch}
-                activeTag={activeTag}
-                setActiveTag={setActiveTag}
-              />
-            )}
-            {activeTab === 'mindmap' && (
-              <div className="flex-1 p-4 flex flex-col items-center justify-center gap-3 text-theme-muted/40">
-                <Network size={32} />
-                <p className="text-xs">Откройте Mindmap</p>
-              </div>
-            )}
-            {activeTab === 'settings' && (
-              <SettingsPanel
-                client={client}
-                notes={notes}
-                onLock={onLock}
-                onNotesChange={(updated) => { setNotes(updated); setSelectedId(null); }}
-              />
-            )}
-          </motion.aside>
-        )}
-      </AnimatePresence>
-
-      {/* ── Main ────────────────────────────────────────────────────────── */}
-      <main className="flex-1 flex flex-col min-w-0 relative">
-
-        {/* Toolbar */}
-        <header className="flex items-center gap-3 px-4 py-2.5 border-b border-theme-border bg-theme-panel/30 backdrop-blur-sm shrink-0">
-          <button
-            onClick={() => setSidebarOpen(v => !v)}
-            className="p-1.5 text-theme-muted hover:text-theme-text rounded-lg hover:bg-theme-text/5 transition-colors shrink-0"
-          >
-            <Menu size={17} />
-          </button>
-
-          {activeTab === 'notes' && selectedId ? (
-            <input
-              type="text"
-              value={title}
-              onChange={e => { setTitle(e.target.value); isDirtyRef.current = true; }}
-              placeholder="Заголовок..."
-              className="flex-1 bg-transparent text-theme-text font-serif font-bold text-base focus:outline-none placeholder-theme-muted/25 min-w-0"
-            />
-          ) : (
-            <span className="font-serif font-bold text-base text-theme-text flex items-center gap-2">
-              {activeTab === 'mindmap' && <><Network className="text-theme-accent" size={16} /> Mindmap</>}
-              {activeTab === 'settings' && <><Settings className="text-theme-accent" size={16} /> Настройки</>}
-              {activeTab === 'notes' && <span className="text-theme-muted/50 text-sm font-sans font-normal">Выберите или создайте заметку</span>}
-            </span>
-          )}
-
-          <div className="ml-auto flex items-center gap-2.5 shrink-0">
-            {saving && <span className="text-xs text-theme-muted/50 animate-pulse font-mono">•••</span>}
-            {saveStatus === 'saved' && (
-              <span className="text-xs text-green-400 flex items-center gap-1 font-mono">
-                <CheckCircle2 size={11} /> saved
-              </span>
-            )}
-            {activeTab === 'notes' && selectedId && (
-              <button
-                onClick={saveNote}
-                className="px-3 py-1.5 rounded-lg bg-theme-accent/12 hover:bg-theme-accent/22 text-theme-accent text-xs font-semibold border border-theme-accent/20 transition-all"
-              >
-                Сохранить
-              </button>
-            )}
-            <button
-              onClick={onLock}
-              className="p-1.5 text-theme-muted hover:text-red-400 rounded-lg hover:bg-red-500/10 transition-colors"
-              title="Заблокировать"
-            >
-              <Lock size={15} />
-            </button>
-          </div>
-        </header>
-
-        {/* Content */}
-        <div className="flex-1 overflow-hidden relative">
-          <AnimatePresence mode="wait">
-            {activeTab === 'mindmap' ? (
-              <motion.div
-                key="mindmap"
-                initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-                transition={{ duration: 0.15 }}
-                className="absolute inset-0"
-              >
-                <MindmapView state={{ mindmaps: [] }} dispatch={() => {}} />
-              </motion.div>
-            ) : (
-              <motion.div
-                key="editor"
-                initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
-                transition={{ duration: 0.15 }}
-                className="absolute inset-0 overflow-y-auto custom-scrollbar"
-              >
-                {selectedId ? (
-                  <textarea
-                    value={content}
-                    onChange={e => { setContent(e.target.value); isDirtyRef.current = true; }}
-                    placeholder={"Начните писать...\n\nИспользуйте #теги для организации заметок"}
-                    className="w-full h-full min-h-full bg-transparent text-theme-text placeholder-theme-muted/20 focus:outline-none resize-none leading-7 text-sm p-6"
-                  />
-                ) : (
-                  <div className="h-full flex flex-col items-center justify-center gap-5 select-none">
-                    <div className="opacity-20 text-5xl">🔐</div>
-                    <div className="text-center opacity-40">
-                      <p className="text-theme-text font-serif text-base mb-1">Хранилище открыто</p>
-                      <p className="text-theme-muted text-sm">
-                        {notes.length === 0 ? 'Создайте первую заметку' : `${notes.length} заметок в базе`}
-                      </p>
-                    </div>
-                    {notes.length === 0 && (
-                      <button
-                        onClick={createNote}
-                        className="flex items-center gap-2 px-4 py-2 rounded-xl bg-theme-accent/12 hover:bg-theme-accent/22 text-theme-accent border border-theme-accent/20 text-sm font-semibold transition-all"
-                      >
-                        <Plus size={14} /> Создать заметку
-                      </button>
-                    )}
-                  </div>
-                )}
-              </motion.div>
-            )}
-          </AnimatePresence>
-        </div>
-
-        {/* Tag bar */}
-        {selectedId && activeTags.length > 0 && (
-          <div className="px-6 py-2 border-t border-theme-border bg-theme-panel/20 flex items-center gap-2 shrink-0 overflow-x-auto">
-            <Tag size={10} className="text-theme-muted/40 shrink-0" />
-            {activeTags.map(tag => (
-              <span key={tag} className="text-[11px] font-mono text-theme-accent/50 bg-theme-accent/5 px-1.5 py-0.5 rounded border border-theme-accent/10 whitespace-nowrap shrink-0">
-                {tag}
-              </span>
-            ))}
-          </div>
-        )}
-      </main>
-    </div>
-  );
-};
-
-export default VaultDashboard;
-import React, { useState } from 'react';
-import { Menu, X, Settings, Plus, Search, Trash2, Pin, Share2, GitBranch, Clock, LogOut, KeyRound, Bot, Send, Image as ImageIcon, Loader2, XCircle, Lock, Database, Download, Upload, Network, CheckCircle } from 'lucide-react';
-import { motion, AnimatePresence } from 'framer-motion';
-import MindmapView from './MindmapView';
+import { Markdown, buildLinkGraph, buildTagIndex, findNoteByTitle, extractTags } from '../lib/obsidian.jsx';
 // ==== ELEGANT TITLE ====
 export const ElegantTitle = ({ children, className = '' }) => {
   return (
@@ -520,123 +13,301 @@ export const ElegantTitle = ({ children, className = '' }) => {
 };
 
 
-// ==== BASE VIEW ====
+// ==== QUICK SWITCHER (Ctrl+O / Ctrl+P) ====
+const QuickSwitcher = ({ items, onPick, onClose }) => {
+  const [query, setQuery] = useState('');
+  const [idx, setIdx] = useState(0);
+  const inputRef = useRef(null);
+
+  useEffect(() => { inputRef.current?.focus(); }, []);
+
+  const results = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    const list = q
+      ? items.filter(i => (i.title || '').toLowerCase().includes(q) || (i.description || '').toLowerCase().includes(q))
+      : [...items].sort((a, b) => new Date(b.created) - new Date(a.created));
+    return list.slice(0, 12);
+  }, [query, items]);
+
+  useEffect(() => { setIdx(0); }, [query]);
+
+  const onKeyDown = (e) => {
+    if (e.key === 'ArrowDown') { e.preventDefault(); setIdx(i => Math.min(i + 1, results.length - 1)); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); setIdx(i => Math.max(i - 1, 0)); }
+    else if (e.key === 'Enter') {
+      e.preventDefault();
+      if (results[idx]) onPick(results[idx].id);
+      else if (query.trim()) onPick(query.trim()); // open/create by name
+    } else if (e.key === 'Escape') { e.preventDefault(); onClose(); }
+  };
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+      className="fixed inset-0 z-[60] flex items-start justify-center pt-[15vh] px-4 bg-theme-text/40 backdrop-blur-sm"
+      onClick={onClose}
+    >
+      <motion.div
+        initial={{ scale: 0.96, y: -10 }} animate={{ scale: 1, y: 0 }} exit={{ scale: 0.96, y: -10 }}
+        className="w-full max-w-xl bg-theme-panel border border-theme-border rounded-2xl shadow-2xl overflow-hidden"
+        onClick={e => e.stopPropagation()}
+      >
+        <div className="flex items-center gap-3 px-4 py-3 border-b border-theme-border">
+          <Search size={18} className="text-theme-muted shrink-0" />
+          <input
+            ref={inputRef}
+            value={query}
+            onChange={e => setQuery(e.target.value)}
+            onKeyDown={onKeyDown}
+            placeholder="Перейти к заметке…"
+            className="flex-1 bg-transparent text-theme-text focus:outline-none placeholder-theme-muted/50"
+          />
+          <kbd className="text-[10px] font-mono text-theme-muted border border-theme-border rounded px-1.5 py-0.5">ESC</kbd>
+        </div>
+        <div className="max-h-[50vh] overflow-y-auto custom-scrollbar py-1">
+          {results.map((item, i) => (
+            <button
+              key={item.id}
+              onMouseEnter={() => setIdx(i)}
+              onClick={() => onPick(item.id)}
+              className={`w-full text-left px-4 py-2.5 flex items-center gap-3 transition-colors ${i === idx ? 'bg-theme-accent/10' : 'hover:bg-theme-text/5'}`}
+            >
+              <span className="shrink-0">{item.type === 'idea' ? '💡' : item.type === 'task' ? '✅' : item.type === 'interesting' ? '🔖' : item.type === 'link' ? '🔗' : '📝'}</span>
+              <span className="flex-1 truncate text-sm text-theme-text">{item.title || 'Без названия'}</span>
+              {i === idx && <CornerDownLeft size={14} className="text-theme-muted shrink-0" />}
+            </button>
+          ))}
+          {results.length === 0 && (
+            <div className="px-4 py-6 text-center text-sm text-theme-muted">
+              {query.trim() ? <>Нажмите <kbd className="font-mono">Enter</kbd>, чтобы создать «{query.trim()}»</> : 'Нет заметок'}
+            </div>
+          )}
+        </div>
+      </motion.div>
+    </motion.div>
+  );
+};
+
+// ==== LINKS PANEL (backlinks + outgoing, Obsidian-style) ====
+const LinksPanel = ({ note, graph, items, onOpenNote }) => {
+  const [open, setOpen] = useState(true);
+  if (!note) return null;
+  const backlinks = graph.backlinks.get(note.id) || [];
+  const outgoing = (graph.outgoing.get(note.id) || []);
+  const total = backlinks.length + outgoing.length;
+
+  return (
+    <div className="border-t border-theme-border bg-theme-bg shrink-0">
+      <button
+        onClick={() => setOpen(o => !o)}
+        className="w-full px-4 py-2 flex items-center gap-2 text-xs font-bold text-theme-muted hover:text-theme-text transition-colors"
+      >
+        <Link2 size={14} className="text-theme-accent" />
+        Связи
+        <span className="ml-1 px-1.5 py-0.5 rounded bg-theme-accent/10 text-theme-accent">{total}</span>
+        <span className="ml-auto">{open ? '▾' : '▸'}</span>
+      </button>
+      {open && (
+        <div className="px-4 pb-3 grid grid-cols-1 sm:grid-cols-2 gap-4 max-h-40 overflow-y-auto custom-scrollbar">
+          <div>
+            <div className="text-[10px] uppercase tracking-wider text-theme-muted mb-1.5 flex items-center gap-1">
+              <CornerDownLeft size={11} /> Обратные ссылки ({backlinks.length})
+            </div>
+            {backlinks.length === 0 && <div className="text-xs text-theme-muted/60 italic">Нет упоминаний</div>}
+            <div className="flex flex-col gap-1">
+              {backlinks.map(b => (
+                <button key={b.id} onClick={() => onOpenNote(b.title)} className="text-left text-sm text-theme-accent hover:text-theme-accent-hover truncate">
+                  ← {b.title}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div>
+            <div className="text-[10px] uppercase tracking-wider text-theme-muted mb-1.5 flex items-center gap-1">
+              <ArrowUpRight size={11} /> Исходящие ({outgoing.length})
+            </div>
+            {outgoing.length === 0 && <div className="text-xs text-theme-muted/60 italic">Нет ссылок</div>}
+            <div className="flex flex-col gap-1">
+              {outgoing.map((o, i) => (
+                <button key={i} onClick={() => onOpenNote(o.title)} className={`text-left text-sm truncate ${o.id ? 'text-theme-accent hover:text-theme-accent-hover' : 'text-theme-accent/50 italic hover:text-theme-accent'}`}>
+                  → {o.alias || o.title}{!o.id && ' (новая)'}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
+
+// ==== BASE VIEW (Obsidian-style notes) ====
 const BaseView = ({ state, dispatch }) => {
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
-  const [sidebarMode, setSidebarMode] = useState('sections'); // 'sections' or 'structure'
+  const [sidebarMode, setSidebarMode] = useState('sections'); // 'sections' | 'structure' | 'tags'
   const [activeSection, setActiveSection] = useState('all');
+  const [activeTag, setActiveTag] = useState(null);
   const [selectedItemId, setSelectedItemId] = useState(null);
-  
+  const [viewMode, setViewMode] = useState('edit'); // 'edit' | 'preview'
+
   const [text, setText] = useState('');
   const [title, setTitle] = useState('');
   const [type, setType] = useState('idea');
   const [search, setSearch] = useState('');
+  const [suggest, setSuggest] = useState(null); // { query } for [[ autocomplete
+  const [showSwitcher, setShowSwitcher] = useState(false);
 
-  React.useEffect(() => {
+  const taRef = useRef(null);
+
+  const graph = useMemo(() => buildLinkGraph(state.items), [state.items]);
+  const tagIndex = useMemo(() => buildTagIndex(state.items), [state.items]);
+  const selectedItem = selectedItemId ? state.items.find(i => i.id === selectedItemId) : null;
+
+  // Sync local editor state from selected item
+  useEffect(() => {
     if (selectedItemId) {
       const item = state.items.find(i => i.id === selectedItemId);
       if (item) {
-        setTitle(item.title || '');
-        setText(item.description || '');
+        if ((item.title || '') !== title) setTitle(item.title || '');
+        if ((item.description || '') !== text) setText(item.description || '');
         setType(item.type || 'idea');
       }
     } else {
       setTitle('');
       setText('');
     }
-  }, [selectedItemId, state.items]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedItemId]);
 
-  const handleSave = () => {
-    if (!text.trim() && !title.trim()) return;
+  // Global Quick Switcher shortcut (Ctrl/Cmd + O)
+  useEffect(() => {
+    const onKey = (e) => {
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'o' || e.key === 'O')) {
+        e.preventDefault();
+        setShowSwitcher(s => !s);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
 
-    if (selectedItemId) {
-      dispatch({
-        type: 'UPDATE_ITEM',
-        payload: {
-          id: selectedItemId,
-          title: title || (type === 'link' ? 'Ссылка' : 'Без названия'),
-          description: text || title,
-          url: type === 'link' ? text : null,
-          type
-        }
-      });
-    } else {
-      dispatch({
-        type: 'ADD_ITEM',
-        payload: {
-          type,
-          title: title || (type === 'link' ? 'Ссылка' : 'Без названия'),
-          description: text || title,
-          url: type === 'link' ? text : null,
-          status: type === 'task' ? 'open' : undefined,
-          priority: type === 'task' ? 'medium' : undefined
-        }
-      });
-      setText('');
-      setTitle('');
+  // Live-commit edits to the reducer so links/tags/backlinks stay current.
+  const commit = (patch) => {
+    if (selectedItemId) dispatch({ type: 'UPDATE_ITEM', payload: { id: selectedItemId, ...patch } });
+  };
+
+  const handleTitleChange = (v) => { setTitle(v); commit({ title: v }); };
+  const handleTypeChange = (v) => { setType(v); commit({ type: v }); };
+
+  const handleTextChange = (e) => {
+    const val = e.target.value;
+    setText(val);
+    commit({ description: val });
+    const pos = e.target.selectionStart;
+    const before = val.slice(0, pos);
+    const m = before.match(/\[\[([^[\]\n]*)$/);
+    setSuggest(m ? { query: m[1] } : null);
+  };
+
+  const suggestions = useMemo(() => {
+    if (!suggest) return [];
+    const q = suggest.query.toLowerCase();
+    return state.items
+      .filter(it => it.id !== selectedItemId && (it.title || '').toLowerCase().includes(q))
+      .slice(0, 6);
+  }, [suggest, state.items, selectedItemId]);
+
+  const applySuggestion = (linkTitle) => {
+    const ta = taRef.current;
+    if (!ta) return;
+    const pos = ta.selectionStart;
+    const before = text.slice(0, pos).replace(/\[\[([^[\]\n]*)$/, `[[${linkTitle}]]`);
+    const after = text.slice(pos);
+    const newVal = before + after;
+    setText(newVal);
+    commit({ description: newVal });
+    setSuggest(null);
+    requestAnimationFrame(() => { ta.focus(); ta.setSelectionRange(before.length, before.length); });
+  };
+
+  // Open a note by its title; create it if it doesn't exist (Obsidian behavior).
+  const openNote = (noteTitle) => {
+    const found = findNoteByTitle(state.items, noteTitle);
+    if (found) {
+      setSelectedItemId(found.id);
+      setViewMode('preview');
+      return;
     }
+    const id = Date.now();
+    dispatch({ type: 'ADD_ITEM', payload: { id, title: noteTitle, description: '', type: 'idea' } });
+    setSelectedItemId(id);
+    setViewMode('edit');
+  };
+
+  const pickFromSwitcher = (idOrTitle) => {
+    setShowSwitcher(false);
+    if (typeof idOrTitle === 'number') { setSelectedItemId(idOrTitle); setViewMode('preview'); }
+    else openNote(idOrTitle);
+  };
+
+  const handleNewNote = () => {
+    const id = Date.now();
+    dispatch({ type: 'ADD_ITEM', payload: { id, title: '', description: '', type } });
+    setSelectedItemId(id);
+    setViewMode('edit');
   };
 
   const handleDelete = (id, e) => {
     e.stopPropagation();
     dispatch({ type: 'DELETE_ITEM', payload: id });
-    if (selectedItemId === id) {
-      setSelectedItemId(null);
-    }
+    if (selectedItemId === id) setSelectedItemId(null);
   };
 
-  const handleNew = () => {
-    setSelectedItemId(null);
-    setTitle('');
-    setText('');
-    setType('idea');
-  };
-
-  let filtered = state.items.filter(item => 
+  let filtered = state.items.filter(item =>
     (item.title?.toLowerCase().includes(search.toLowerCase()) ||
      item.description?.toLowerCase().includes(search.toLowerCase()) ||
      item.url?.toLowerCase().includes(search.toLowerCase()))
   );
-
-  if (activeSection !== 'all') {
-    filtered = filtered.filter(item => item.type === activeSection);
-  }
-  
+  if (activeSection !== 'all') filtered = filtered.filter(item => item.type === activeSection);
+  if (activeTag) filtered = filtered.filter(item => extractTags(`${item.title || ''}\n${item.description || ''}`).includes(activeTag));
   filtered = filtered.sort((a, b) => new Date(b.created) - new Date(a.created));
 
   return (
     <div className="flex h-[calc(100vh-12rem)] gap-4 animate-in fade-in duration-500">
       <AnimatePresence>
+        {showSwitcher && (
+          <QuickSwitcher items={state.items} onPick={pickFromSwitcher} onClose={() => setShowSwitcher(false)} />
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
         {isSidebarOpen && (
-          <motion.div 
+          <motion.div
             initial={{ width: 0, opacity: 0 }}
             animate={{ width: 280, opacity: 1 }}
             exit={{ width: 0, opacity: 0 }}
             className="shrink-0 flex flex-col glass-panel"
           >
-            <div className="p-3 border-b border-theme-border flex gap-2">
-              <button 
-                onClick={() => setSidebarMode('sections')}
-                className={`flex-1 py-1.5 text-xs font-bold rounded-lg transition-all ${sidebarMode === 'sections' ? 'bg-theme-accent text-theme-bg shadow-sm' : 'bg-transparent text-theme-muted hover:bg-theme-text/5'}`}
-              >
-                Разделы
-              </button>
-              <button 
-                onClick={() => setSidebarMode('structure')}
-                className={`flex-1 py-1.5 text-xs font-bold rounded-lg transition-all ${sidebarMode === 'structure' ? 'bg-theme-accent text-theme-bg shadow-sm' : 'bg-transparent text-theme-muted hover:bg-theme-text/5'}`}
-              >
-                Структура
-              </button>
+            <div className="p-3 border-b border-theme-border grid grid-cols-3 gap-1.5">
+              {[['sections', 'Разделы'], ['structure', 'Заметки'], ['tags', 'Теги']].map(([m, label]) => (
+                <button
+                  key={m}
+                  onClick={() => setSidebarMode(m)}
+                  className={`py-1.5 text-xs font-bold rounded-lg transition-all ${sidebarMode === m ? 'bg-theme-accent text-theme-bg shadow-sm' : 'bg-transparent text-theme-muted hover:bg-theme-text/5'}`}
+                >
+                  {label}
+                </button>
+              ))}
             </div>
 
             <div className="p-3 flex-1 overflow-y-auto custom-scrollbar flex flex-col gap-2">
-              {sidebarMode === 'sections' ? (
+              {sidebarMode === 'sections' && (
                 <>
                   {['all', 'idea', 'task', 'interesting', 'link'].map(sec => (
-                    <button 
+                    <button
                       key={sec}
-                      onClick={() => setActiveSection(sec)}
-                      className={`flex items-center justify-start gap-2 px-3 py-2 rounded-xl text-sm transition-all ${activeSection === sec ? 'bg-theme-panel text-theme-text border border-theme-accent/30 shadow-sm' : 'text-theme-muted hover:bg-theme-panel/50 hover:text-theme-text border border-transparent'}`}
+                      onClick={() => { setActiveSection(sec); setActiveTag(null); }}
+                      className={`flex items-center justify-start gap-2 px-3 py-2 rounded-xl text-sm transition-all ${activeSection === sec && !activeTag ? 'bg-theme-panel text-theme-text border border-theme-accent/30 shadow-sm' : 'text-theme-muted hover:bg-theme-panel/50 hover:text-theme-text border border-transparent'}`}
                     >
                       {sec === 'all' && '📂 Все записи'}
                       {sec === 'idea' && '💡 Идеи'}
@@ -645,30 +316,41 @@ const BaseView = ({ state, dispatch }) => {
                       {sec === 'link' && '🔗 Ссылки'}
                     </button>
                   ))}
+                  <button
+                    onClick={() => setShowSwitcher(true)}
+                    className="mt-2 flex items-center gap-2 px-3 py-2 rounded-xl text-xs text-theme-muted hover:bg-theme-panel/50 hover:text-theme-text border border-dashed border-theme-border transition-all"
+                  >
+                    <Command size={13} /> Быстрый переход <kbd className="ml-auto font-mono text-[10px]">Ctrl+O</kbd>
+                  </button>
                 </>
-              ) : (
+              )}
+
+              {sidebarMode === 'structure' && (
                 <>
                   <div className="relative mb-2 shrink-0">
                     <Search size={14} className="absolute left-3 top-2.5 text-theme-muted" />
-                    <input 
-                      type="text" 
-                      placeholder="Поиск..." 
+                    <input
+                      type="text"
+                      placeholder="Поиск..."
                       value={search}
                       onChange={e => setSearch(e.target.value)}
                       className="w-full bg-theme-panel border border-theme-border rounded-lg pl-9 pr-3 py-2 text-sm text-theme-text focus:outline-none focus:border-theme-accent shadow-sm"
                     />
                   </div>
+                  {activeTag && (
+                    <button onClick={() => setActiveTag(null)} className="mb-1 self-start inline-flex items-center gap-1 text-xs bg-theme-accent/10 text-theme-accent px-2 py-1 rounded-md">
+                      #{activeTag} <X size={11} />
+                    </button>
+                  )}
                   <div className="flex-1 overflow-y-auto custom-scrollbar flex flex-col gap-1">
                     {filtered.map(item => (
-                      <div 
+                      <div
                         key={item.id}
-                        onClick={() => setSelectedItemId(item.id)}
+                        onClick={() => { setSelectedItemId(item.id); setViewMode('preview'); }}
                         className={`group flex items-center justify-between px-3 py-2 rounded-xl text-sm cursor-pointer transition-all border ${selectedItemId === item.id ? 'bg-theme-panel border-theme-accent/30 text-theme-text shadow-sm' : 'bg-transparent border-transparent text-theme-muted hover:bg-theme-panel/50 hover:text-theme-text'}`}
                       >
                         <div className="flex items-center gap-2 truncate">
-                          <span>
-                            {item.type === 'idea' ? '💡' : item.type === 'task' ? '✅' : item.type === 'interesting' ? '🔖' : item.type === 'link' ? '🔗' : '📝'}
-                          </span>
+                          <span>{item.type === 'idea' ? '💡' : item.type === 'task' ? '✅' : item.type === 'interesting' ? '🔖' : item.type === 'link' ? '🔗' : '📝'}</span>
                           <span className="truncate">{item.title || 'Без названия'}</span>
                         </div>
                         <button onClick={(e) => handleDelete(item.id, e)} className="opacity-0 group-hover:opacity-100 text-theme-accent hover:text-red-500 transition-colors shrink-0">
@@ -680,11 +362,26 @@ const BaseView = ({ state, dispatch }) => {
                   </div>
                 </>
               )}
+
+              {sidebarMode === 'tags' && (
+                <div className="flex flex-wrap gap-1.5 content-start">
+                  {tagIndex.length === 0 && <div className="text-center text-theme-muted text-xs mt-4 w-full">Нет тегов. Добавьте #тег в заметку.</div>}
+                  {tagIndex.map(([tag, count]) => (
+                    <button
+                      key={tag}
+                      onClick={() => { setActiveTag(tag); setActiveSection('all'); setSidebarMode('structure'); }}
+                      className={`inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs transition-all ${activeTag === tag ? 'bg-theme-accent text-theme-bg' : 'bg-theme-accent/10 text-theme-accent hover:bg-theme-accent/20'}`}
+                    >
+                      <Hash size={11} />{tag}<span className="opacity-60">{count}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
-            
+
             <div className="p-3 border-t border-theme-border shrink-0">
-              <button 
-                onClick={handleNew}
+              <button
+                onClick={handleNewNote}
                 className="w-full bg-theme-text hover:bg-theme-text/90 text-theme-bg text-sm py-2 rounded-xl transition-all flex items-center justify-center gap-2 border border-transparent shadow-sm"
               >
                 <Plus size={16} /> Новая запись
@@ -695,7 +392,7 @@ const BaseView = ({ state, dispatch }) => {
       </AnimatePresence>
 
       <div className="flex-1 flex flex-col bg-theme-panel border border-theme-border rounded-2xl overflow-hidden shadow-sm relative">
-        <button 
+        <button
           onClick={() => setIsSidebarOpen(!isSidebarOpen)}
           className="absolute left-3 top-3.5 z-10 p-1.5 bg-theme-bg hover:bg-theme-panel text-theme-muted hover:text-theme-text rounded-lg transition-colors border border-theme-border shadow-sm"
         >
@@ -706,7 +403,7 @@ const BaseView = ({ state, dispatch }) => {
           <div className="flex items-center gap-2 flex-1 min-w-[200px]">
             <select
               value={type}
-              onChange={e => setType(e.target.value)}
+              onChange={e => handleTypeChange(e.target.value)}
               className="bg-theme-panel border border-theme-border rounded-lg px-3 py-1.5 text-sm text-theme-text focus:outline-none focus:border-theme-accent cursor-pointer shadow-sm"
             >
               <option value="idea">💡 Идея</option>
@@ -714,29 +411,85 @@ const BaseView = ({ state, dispatch }) => {
               <option value="interesting">🔖 Интересное</option>
               <option value="link">🔗 Ссылка</option>
             </select>
-            <input 
-              type="text" 
+            <input
+              type="text"
               value={title}
-              onChange={e => setTitle(e.target.value)}
+              onChange={e => handleTitleChange(e.target.value)}
               placeholder="Заголовок..."
               className="flex-1 bg-transparent text-theme-text font-serif font-bold px-2 py-1 focus:outline-none placeholder-theme-muted/40 min-w-0"
             />
           </div>
-          <button 
-            onClick={handleSave}
-            className="bg-theme-accent hover:bg-theme-accent-hover text-theme-bg text-sm font-semibold py-1.5 px-4 rounded-lg transition-all shadow-sm flex items-center gap-2 shrink-0 active:scale-95"
-          >
-            {selectedItemId ? 'Сохранить' : <><Plus size={16} /> Записать</>}
-          </button>
+          <div className="flex items-center gap-1.5 shrink-0">
+            <div className="flex bg-theme-panel border border-theme-border rounded-lg p-0.5">
+              <button
+                onClick={() => setViewMode('edit')}
+                className={`p-1.5 rounded-md transition-all ${viewMode === 'edit' ? 'bg-theme-accent text-theme-bg shadow-sm' : 'text-theme-muted hover:text-theme-text'}`}
+                title="Редактировать"
+              >
+                <Pencil size={15} />
+              </button>
+              <button
+                onClick={() => setViewMode('preview')}
+                className={`p-1.5 rounded-md transition-all ${viewMode === 'preview' ? 'bg-theme-accent text-theme-bg shadow-sm' : 'text-theme-muted hover:text-theme-text'}`}
+                title="Просмотр"
+              >
+                <Eye size={15} />
+              </button>
+            </div>
+          </div>
         </div>
 
-        <div className="flex-1 p-4 flex flex-col bg-theme-panel">
-          <textarea
-            value={text}
-            onChange={e => setText(e.target.value)}
-            placeholder="Начните писать здесь..."
-            className="flex-1 w-full bg-transparent text-theme-text placeholder-theme-muted/30 focus:outline-none resize-none custom-scrollbar leading-relaxed"
-          />
+        <div className="flex-1 flex flex-col bg-theme-panel overflow-hidden relative">
+          {viewMode === 'edit' ? (
+            <div className="flex-1 p-4 flex flex-col relative overflow-hidden">
+              <textarea
+                ref={taRef}
+                value={text}
+                onChange={handleTextChange}
+                onBlur={() => setTimeout(() => setSuggest(null), 150)}
+                placeholder="Начните писать… Используйте # для заголовков, **жирный**, - списки, [[ссылки]] и #теги."
+                className="flex-1 w-full bg-transparent text-theme-text placeholder-theme-muted/30 focus:outline-none resize-none custom-scrollbar leading-relaxed font-mono text-sm"
+              />
+              {suggest && suggestions.length > 0 && (
+                <div className="absolute left-4 bottom-4 z-20 w-72 max-h-56 overflow-y-auto custom-scrollbar bg-theme-panel border border-theme-border rounded-xl shadow-2xl py-1">
+                  <div className="px-3 py-1 text-[10px] uppercase tracking-wider text-theme-muted">Связать с заметкой</div>
+                  {suggestions.map(s => (
+                    <button
+                      key={s.id}
+                      onMouseDown={(e) => { e.preventDefault(); applySuggestion(s.title); }}
+                      className="w-full text-left px-3 py-2 text-sm text-theme-text hover:bg-theme-accent/10 truncate flex items-center gap-2"
+                    >
+                      <FileText size={14} className="text-theme-accent shrink-0" />{s.title || 'Без названия'}
+                    </button>
+                  ))}
+                  {suggest.query.trim() && !findNoteByTitle(state.items, suggest.query) && (
+                    <button
+                      onMouseDown={(e) => { e.preventDefault(); applySuggestion(suggest.query.trim()); }}
+                      className="w-full text-left px-3 py-2 text-sm text-theme-accent hover:bg-theme-accent/10 truncate flex items-center gap-2 border-t border-theme-border"
+                    >
+                      <Plus size={14} className="shrink-0" />Создать «{suggest.query.trim()}»
+                    </button>
+                  )}
+                </div>
+              )}
+            </div>
+          ) : (
+            <div className="flex-1 p-6 overflow-y-auto custom-scrollbar">
+              {(title || text) ? (
+                <>
+                  {title && <h1 className="font-serif font-bold text-2xl text-theme-text mb-3">{title}</h1>}
+                  <Markdown content={text} items={state.items} onOpenNote={openNote} onTagClick={(t) => { setActiveTag(t); setSidebarMode('structure'); }} />
+                </>
+              ) : (
+                <div className="h-full flex flex-col items-center justify-center text-center opacity-50">
+                  <FileText size={48} className="text-theme-accent mb-3" />
+                  <p className="text-theme-muted italic font-serif">Пустая заметка. Переключитесь в режим редактирования.</p>
+                </div>
+              )}
+            </div>
+          )}
+
+          <LinksPanel note={selectedItem} graph={graph} items={state.items} onOpenNote={openNote} />
         </div>
       </div>
     </div>
