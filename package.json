@@ -10,6 +10,9 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@mcp-ui/client": "^7.1.1",
+    "@mcp-ui/server": "^6.1.0",
+    "@modelcontextprotocol/ext-apps": "^1.7.4",
     "@xyflow/react": "^12.11.1",
     "cors": "^2.8.6",
     "dotenv": "^17.4.2",
