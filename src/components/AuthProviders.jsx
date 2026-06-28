@@ -25,8 +25,15 @@ const AuthProviders = ({ children }) => {
         `width=${width},height=${height},toolbar=no,menubar=no,location=no,status=no,directories=no,scrollbars=yes,resizable=yes,left=${left},top=${top}`
       );
 
+      if (!authWindow) {
+        setError('Pop-up window was blocked. Please enable pop-ups for this site.');
+        setLoading(false);
+        return;
+      }
+
       const messageListener = (event) => {
         if (event.origin !== window.location.origin) return;
+        if (typeof event.data !== 'object' || !event.data) return;
         if (event.data.source === 'omni-oauth') {
           if (event.data.ok) {
             checkAuthStatus();

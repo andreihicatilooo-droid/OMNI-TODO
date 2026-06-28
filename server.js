@@ -26,11 +26,17 @@ app.use(cors({
 }));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+const isProduction = process.env.NODE_ENV === 'production';
+const sessionSecret = process.env.SESSION_SECRET || (isProduction ? null : 'dev-secret');
+if (isProduction && !sessionSecret) {
+  throw new Error('SESSION_SECRET must be set in production');
+}
+
 app.use(session({
-  secret: process.env.SESSION_SECRET || 'omni-secret',
+  secret: sessionSecret,
   resave: false,
   saveUninitialized: false,
-  cookie: { secure: false, httpOnly: true, sameSite: 'lax' }
+  cookie: { secure: isProduction, httpOnly: true, sameSite: 'lax' }
 }));
 
 const githubModelsClient = process.env.GITHUB_TOKEN
@@ -49,7 +55,11 @@ const auth = new GoogleAuth({
 });
 
 const closeWindowHtml = (provider) => `<!doctype html><html><head><meta charset="utf-8"></head><body><script>window.opener?.postMessage({ provider: '${provider}' }, '*');setTimeout(() => window.close(), 500);</script><p>Authentication complete. You can close this window.</p></body></html>`;
-const closeWindowErrorHtml = (provider, error) => `<!doctype html><html><head><meta charset="utf-8"></head><body><script>window.opener?.postMessage({ provider: '${provider}', error: ${JSON.stringify(error)} }, '*');setTimeout(() => window.close(), 1200);</script><p>Authentication failed: ${error}</p></body></html>`;
+const closeWindowErrorHtml = (provider, error) => {
+  const escapedError = escapeHtml(error);
+  const msgJson = JSON.stringify({ provider, error }).replace(/</g, '\\u003c');
+  return `<!doctype html><html><head><meta charset="utf-8"></head><body><script>window.opener?.postMessage(${msgJson}, '*');setTimeout(() => window.close(), 1200);</script><p>Authentication failed: ${escapedError}</p></body></html>`;
+};
 
 const DEFAULT_FRONTEND_URL = 'http://localhost:1337';
 const DEFAULT_OLLAMA_BASE_URL = 'http://localhost:11434';
@@ -75,7 +85,7 @@ const parseAuthState = (state) => {
 
 const buildAuthRedirectUrl = (req, provider, state = {}) => {
   const fallbackOrigin = getFrontendUrl(req);
-  const origin = state.frontendOrigin && /^https?:\/\//.test(state.frontendOrigin)
+  const origin = state.frontendOrigin && ALLOWED_ORIGINS.includes(state.frontendOrigin)
     ? state.frontendOrigin
     : fallbackOrigin;
   return `${origin}/?auth=success&provider=${provider}`;
@@ -91,7 +101,7 @@ const respondWithAuthCompletion = (req, res, provider, mode = 'popup', state = {
 const respondWithAuthError = (req, res, provider, error, mode = 'popup', state = {}) => {
   if (mode === 'redirect') {
     const fallbackOrigin = getFrontendUrl(req);
-    const origin = state.frontendOrigin && /^https?:\/\//.test(state.frontendOrigin)
+    const origin = state.frontendOrigin && ALLOWED_ORIGINS.includes(state.frontendOrigin)
       ? state.frontendOrigin
       : fallbackOrigin;
     return res.redirect(`${origin}/?auth=error&provider=${provider}&message=${encodeURIComponent(error)}`);
@@ -168,6 +178,10 @@ const buildServiceUrl = (baseUrl, pathname) => {
   const normalizedBaseUrl = baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`;
   return new URL(pathname.replace(/^\//, ''), normalizedBaseUrl).toString();
 };
+
+const escapeHtml = (s) => String(s ?? '')
+  .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+  .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 
 const normalizeOllamaModels = (payload) => {
   if (!Array.isArray(payload?.models)) {
@@ -332,6 +346,9 @@ app.get('/api/config/oauth', (req, res) => {
 });
 
 app.post('/api/config/oauth', (req, res) => {
+  if (!req.session || !req.session.id) {
+    return res.status(401).json({ ok: false, error: 'Unauthorized: session required' });
+  }
   try {
     saveRuntimeConfigToEnv(req.body || {});
     applyRuntimeConfigToProcess(mergeRuntimeConfigPayload(req.body || {}));
@@ -847,10 +864,6 @@ const saveAiTokens = (tokens) => {
 
 const aiOauthStates = new Map();
 
-const escapeHtml = (s) => String(s ?? '')
-  .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-  .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
-
 const aiPopupResponse = (payload, source = 'omni-oauth') => {
   const safeError = escapeHtml(payload.error);
   const msgJson = JSON.stringify({ source, ...payload }).replace(/</g, '\\u003c');
@@ -1104,6 +1117,9 @@ app.post('/api/vertex-ai/chat', async (req, res) => {
 });
 
 app.post('/api/github-models/chat', async (req, res) => {
+  if (!req.session || !req.session.id) {
+    return res.status(401).json({ ok: false, error: 'Unauthorized: session required' });
+  }
   try {
     const { prompt, system, model, temperature, top_p, stream } = req.body || {};
 
@@ -1176,6 +1192,9 @@ app.post('/api/github-models/chat', async (req, res) => {
 });
 
 app.post('/api/github-models/responses', async (req, res) => {
+  if (!req.session || !req.session.id) {
+    return res.status(401).json({ ok: false, error: 'Unauthorized: session required' });
+  }
   try {
     const { input, instructions, model, temperature, max_output_tokens } = req.body || {};
 
