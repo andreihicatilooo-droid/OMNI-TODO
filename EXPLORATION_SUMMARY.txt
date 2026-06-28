@@ -1,0 +1,269 @@
+═══════════════════════════════════════════════════════════════════════════════
+                        OMNI-TODO CODEBASE EXPLORATION
+═══════════════════════════════════════════════════════════════════════════════
+
+SUMMARY OF FINDINGS:
+
+1. VIEWS/SECTIONS (6 Main Components in VaultDashboard.jsx)
+   ─────────────────────────────────────────────────────────
+   
+   ✓ BaseView - Knowledge Base with 5 sub-sections
+     • All items (combined view)
+     • Ideas (💡) - Brainstorm/notes
+     • Tasks (✅) - Todo items with status/priority
+     • Interesting (🔖) - Bookmarks/references
+     • Links (🔗) - URL references
+   
+   ✓ ProjectsView - Project & Issue Tracking
+     • Create/edit projects with progress tracking (0-100%)
+     • Store issues per project
+     • Status management (planning → active → completed)
+   
+   ✓ MindmapView - Visual Network Mapping
+     • Node-based spatial organization
+     • Connection visualization
+   
+   ✓ OmniView - AI-Powered Personal Assistant
+     • Multi-session chat interface
+     • 7+ LLM provider support (Gemini, Claude, Ollama, etc.)
+     • Auto-extract tasks/projects from conversations
+     • Real-time streaming (SSE)
+   
+   ✓ GalleryView - Image/Media Management
+     • Timestamp-based organization
+     • Storage and retrieval
+   
+   ✓ SettingsView - Configuration & Sync Control
+     • Export/Import encrypted vault
+     • Google Drive integration status
+     • Theme selection (dark/light/cyberpunk)
+     • AI provider configuration
+     • Auto-lock settings
+
+
+2. DATA STRUCTURE (appReducer State)
+   ────────────────────────────────
+   
+   ROOT STATE:
+   • settings: Theme, color, autoLock settings
+   • items: Knowledge base items (notes/tasks/links/ideas)
+   • projects: Project objects with issues array
+   • mindmaps: Mind map nodes
+   • gallery: Image metadata
+   • chatSessions: Multi-session chat history (with message extraction)
+   • cerberHistory: Deprecated (migrates to chatSessions)
+
+   ITEM SCHEMA:
+   {
+     id: timestamp,
+     created: ISO8601,
+     pinned: boolean,
+     title: string,
+     description: string,
+     type: 'idea' | 'task' | 'interesting' | 'link',
+     status?: 'open' | 'closed' (tasks only),
+     priority?: 'low' | 'medium' | 'high' (tasks only),
+     url?: string (links only)
+   }
+
+   PROJECT SCHEMA:
+   {
+     id: timestamp,
+     created: ISO8601,
+     name: string,
+     description: string,
+     status: 'planning' | 'active' | 'completed',
+     progress: number (0-100),
+     issues: [] (array of issue objects)
+   }
+
+   CHAT SESSION SCHEMA:
+   {
+     id: timestamp,
+     name: string,
+     created: ISO8601,
+     messages: [
+       {
+         role: 'user' | 'assistant',
+         content: string,
+         timestamp: ISO8601,
+         actions?: array (extracted tasks/projects)
+       }
+     ]
+   }
+
+
+3. IMPORT/EXPORT & SYNC FUNCTIONALITY
+   ──────────────────────────────────
+   
+   EXPORT:
+   • Password-encrypts entire state
+   • Uses AES-256-GCM with PBKDF2 (250k iterations)
+   • Format: BASE1:salt(b64):iv(b64):ciphertext(b64)
+   • Saves to .vault file or Google Drive
+   
+   IMPORT:
+   • Decrypts file with password
+   • Validates format (BASE1 header)
+   • Merges into current state (LOAD action)
+   • Auto-saves merged result
+   
+   STORAGE HIERARCHY (Priority):
+   1. Google Drive (if authenticated)
+      • OAuth scope: drive.file (app-created files only)
+      • Multipart upload via Drive API v3
+   
+   2. File System Access API (.vault files)
+      • Chromium browsers only
+      • Handle persisted in IndexedDB
+      • Last file auto-reopens on browser start
+   
+   3. localStorage (fallback)
+      • ~5-10MB limit
+      • Browser-local only
+   
+   AUTO-SAVE:
+   • Debounced 600ms (prevents excessive writes)
+   • Triggered on any state change
+   • Manual override: Ctrl+S / Cmd+S for immediate save
+
+
+4. SERVER.JS - EXTERNAL API CALLS
+   ────────────────────────────────
+   
+   CORS PROTECTION:
+   • Allowlist validation (FRONTEND_URL env variable)
+   • Dynamic origin checking for dev environments
+   • Allowed: localhost, GitHub Codespaces, Gitpod
+   
+   AUTHENTICATION ROUTES:
+   • GET /auth/status → Check OAuth connection state
+   • GET /auth/google → Initiate Google OAuth flow
+   • GET /auth/github → Initiate GitHub OAuth flow
+   • GET /auth/copilot → GitHub Copilot authentication
+   • POST /auth/logout/:provider → Disconnect OAuth
+   • POST /api/auth/telegram/callback → Telegram bot webhook
+   
+   AI PROVIDER ENDPOINTS (Streaming via SSE):
+   • POST /api/gemini → Google Gemini text generation
+   • POST /api/gemini/chat → Gemini streaming chat
+   • POST /api/ollama → Local Ollama LLM
+   • POST /api/anthropic/chat → Anthropic Claude
+   • POST /api/vertex-ai/chat → Google Vertex AI
+   • POST /api/github-models/chat → GitHub Models
+   • POST /api/huggingface/chat → HuggingFace Inference
+   • POST /api/inception/chat → Inception Labs (diffusion)
+   • GET /api/ai/status → Provider availability check
+   • GET /api/ai/models → List available models
+   
+   CONFIGURATION ROUTES:
+   • GET /api/config/oauth → Read OAuth credentials
+   • POST /api/config/oauth → Update .env file dynamically
+   
+   STREAM PROTOCOL:
+   • Each chunk: data: {"text": "..."}\n\n
+   • Terminator: data: [DONE]\n\n
+   • Headers: Content-Type: text/event-stream
+   
+   SESSION MANAGEMENT:
+   • express-session with httpOnly cookies
+   • Separate sessions per OAuth provider
+   • SESSION_SECRET from .env (auto-generated if missing)
+
+
+5. ITEM SCHEMA DETAILS
+   ───────────────────
+   
+   ITEM TYPES:
+   • idea (💡) - Brainstorm/note entry
+   • task (✅) - Todo item (has status, priority)
+   • interesting (🔖) - Bookmark/saved reference
+   • link (🔗) - URL entry with optional title
+   
+   TASK-SPECIFIC PROPERTIES:
+   • status: 'open' (default) | 'closed'
+   • priority: 'low' | 'medium' (default) | 'high'
+   
+   LINK-SPECIFIC PROPERTIES:
+   • url: string (required for links)
+   • title: Can include URL preview
+   
+   CRUD OPERATIONS:
+   • ADD_ITEM: Adds new item, auto-generates id (timestamp)
+   • UPDATE_ITEM: Modifies existing item by id
+   • DELETE_ITEM: Removes item by id
+   • Items sorted by creation date (newest first)
+
+
+6. PROJECTS & ISSUES STRUCTURE
+   ─────────────────────────────
+   
+   PROJECT PROPERTIES:
+   • id: Timestamp (unique identifier)
+   • created: ISO 8601 timestamp
+   • name: Project name (required)
+   • description: Optional project description
+   • status: 'planning' | 'active' | 'completed'
+   • progress: 0-100 percentage indicator
+   • issues: Array of issue objects
+   
+   ISSUE PROPERTIES (Basic):
+   • id: Timestamp
+   • title: Issue name
+   • description: Optional details
+   • status: Current state
+   
+   OMNI AUTO-EXTRACTION:
+   • Pattern detection: "create project \"Name\""
+   • Creates project with description: "Инициировано OMNI Orchestrator"
+   • Similarly extracts tasks: "☑️ Task Name | Details"
+   
+   PROJECT CRUD:
+   • ADD_PROJECT: New project with initial status 'planning'
+   • UPDATE_PROJECT: Modify any project property
+   • DELETE_PROJECT: Remove project and all issues
+
+
+═══════════════════════════════════════════════════════════════════════════════
+
+ENCRYPTION & SECURITY:
+  Algorithm: AES-256-GCM (authenticated encryption)
+  Key Derivation: PBKDF2-SHA256 with 250,000 iterations
+  Salt: 16 random bytes
+  IV: 12 random bytes (nonce)
+  Password: User-provided (client-side only)
+  Server Role: Proxy only (never sees plaintext)
+
+REDUCER ACTIONS:
+  Items: ADD_ITEM, UPDATE_ITEM, DELETE_ITEM
+  Projects: ADD_PROJECT, UPDATE_PROJECT, DELETE_PROJECT
+  Chat: ADD_CHAT_SESSION, DELETE_CHAT_SESSION, ADD_MSG_TO_SESSION, 
+        APPEND_MSG_TO_SESSION, RENAME_CHAT_SESSION
+  Mindmaps: ADD_MINDMAP, UPDATE_MINDMAP, DELETE_MINDMAP
+  Gallery: ADD_IMAGE, DELETE_IMAGE
+  Global: UPDATE_SETTINGS, LOAD
+
+KEY FILES:
+  • /src/App.jsx (560 lines) - Main component, auth, persistence
+  • /src/components/VaultDashboard.jsx (2006 lines) - UI tabs & views
+  • /server.js (1668 lines) - Backend API endpoints
+  • /src/lib/crypto.js (232 lines) - Encryption, file I/O
+  • /src/lib/googleDrive.js (140+ lines) - Google Drive integration
+
+═══════════════════════════════════════════════════════════════════════════════
+
+DOCUMENTATION FILES CREATED:
+
+1. ARCHITECTURE.md (573 lines)
+   • Detailed breakdown of each section
+   • Complete code snippets
+   • API route documentation
+   • Full schema definitions
+
+2. QUICK_REFERENCE.md (299 lines)
+   • Visual tables and quick lookups
+   • Environment variables reference
+   • Reducer actions summary
+   • Key patterns and best practices
+
+═══════════════════════════════════════════════════════════════════════════════

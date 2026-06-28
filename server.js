@@ -3,7 +3,10 @@ import cors from 'cors';
 import session from 'express-session';
 import dotenv from 'dotenv';
 import { GoogleAuth, OAuth2Client } from 'google-auth-library';
+import { GoogleGenAI } from '@google/genai';
 import OpenAI from 'openai';
+import Anthropic from '@anthropic-ai/sdk';
+import { HfInference } from '@huggingface/inference';
 import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
@@ -17,17 +20,40 @@ const port = process.env.PORT ? Number(process.env.PORT) : 3001;
 // с credentials позволял бы любому сайту дёргать /api/auth/* в браузере пользователя.
 const ALLOWED_ORIGINS = (process.env.FRONTEND_URL || 'http://localhost:1337,http://localhost:5173')
   .split(',').map((s) => s.trim()).filter(Boolean);
+
+// Хосты облачных дев-окружений, где домен фронтенда динамический
+// (GitHub Codespaces, Gitpod). Порт-форвардинг проксирует браузер на бэкенд,
+// поэтому forwarded-Origin нужно разрешать, иначе все API-запросы падают с 500.
+const ALLOWED_ORIGIN_SUFFIXES = ['.app.github.dev', '.githubpreview.dev', '.gitpod.io', '.github.dev'];
+
+const isAllowedOrigin = (origin) => {
+  if (!origin) return true; // не-браузерные запросы (curl, server-to-server)
+  if (ALLOWED_ORIGINS.includes(origin)) return true;
+  try {
+    const { hostname } = new URL(origin);
+    if (hostname === 'localhost' || hostname === '127.0.0.1') return true;
+    return ALLOWED_ORIGIN_SUFFIXES.some((suffix) => hostname.endsWith(suffix));
+  } catch {
+    return false;
+  }
+};
+
 app.use(cors({
-  origin: (origin, cb) => {
-    if (!origin || ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
-    return cb(new Error('Not allowed by CORS'));
-  },
+  // cb(null, false) вместо throw: запрос отклоняется без CORS-заголовков,
+  // но без шумного стектрейса в логах на каждый чужой origin.
+  origin: (origin, cb) => cb(null, isAllowedOrigin(origin)),
   credentials: true,
 }));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+const SESSION_SECRET = process.env.SESSION_SECRET || (() => {
+  const generated = crypto.randomBytes(32).toString('hex');
+  console.warn('[WARN] SESSION_SECRET not set — using a random secret. Sessions will be invalidated on restart. Set SESSION_SECRET in .env for persistence.');
+  return generated;
+})();
+
 app.use(session({
-  secret: process.env.SESSION_SECRET || 'omni-secret',
+  secret: SESSION_SECRET,
   resave: false,
   saveUninitialized: false,
   cookie: { secure: false, httpOnly: true, sameSite: 'lax' }
@@ -40,6 +66,14 @@ const githubModelsClient = process.env.GITHUB_TOKEN
     defaultQuery: {
       'api-version': '2024-08-01-preview',
     },
+  })
+  : null;
+
+// Inception Labs (Mercury) — OpenAI-совместимый API диффузионных LLM.
+const inceptionClient = process.env.INCEPTION_API_KEY
+  ? new OpenAI({
+    baseURL: 'https://api.inceptionlabs.ai/v1',
+    apiKey: process.env.INCEPTION_API_KEY,
   })
   : null;
 
@@ -99,8 +133,7 @@ const respondWithAuthError = (req, res, provider, error, mode = 'popup', state =
   return res.status(500).send(closeWindowErrorHtml(provider, error));
 };
 
-// Путь к инструкциям OMNI (если они потребуются для локального контекста)
-const OMNI_INSTRUCTIONS_PATH = 'C:/Users/G6E6N/Downloads/exported_app_OMNI (1)/OMNI/agents/OMNI_AI_Assistant/instruction.txt';
+const OMNI_INSTRUCTIONS_PATH = process.env.OMNI_INSTRUCTIONS_PATH || path.resolve(process.cwd(), 'omni_instructions.txt');
 const ENV_FILE_PATH = path.resolve(process.cwd(), '.env');
 
 const parseEnvFile = () => {
@@ -149,6 +182,9 @@ const getRuntimeConfig = () => {
     googleGeminiChatModel: fileEnv.GOOGLE_GEMINI_CHAT_MODEL || process.env.GOOGLE_GEMINI_CHAT_MODEL || 'gemini-2.0-flash',
     frontendUrl: fileEnv.FRONTEND_URL || process.env.FRONTEND_URL || DEFAULT_FRONTEND_URL,
     ollamaBaseUrl: fileEnv.OLLAMA_BASE_URL || process.env.OLLAMA_BASE_URL || DEFAULT_OLLAMA_BASE_URL,
+    anthropicApiKey: fileEnv.ANTHROPIC_API_KEY || process.env.ANTHROPIC_API_KEY || '',
+    inceptionApiKey: fileEnv.INCEPTION_API_KEY || process.env.INCEPTION_API_KEY || '',
+    huggingfaceApiKey: fileEnv.HUGGINGFACE_API_KEY || process.env.HUGGINGFACE_API_KEY || '',
   };
 };
 
@@ -167,6 +203,39 @@ const applyRuntimeConfigToProcess = (runtimeConfig) => {
 const buildServiceUrl = (baseUrl, pathname) => {
   const normalizedBaseUrl = baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`;
   return new URL(pathname.replace(/^\//, ''), normalizedBaseUrl).toString();
+};
+
+// Общий SSE-контракт для стриминговых эндпоинтов чата.
+// Клиент ожидает строки `data: {"text": "..."}` и финальную `data: [DONE]`.
+const beginSSE = (res) => {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+};
+const sendSSEText = (res, text) => {
+  res.write(`data: ${JSON.stringify({ text })}\n\n`);
+};
+const endSSE = (res) => {
+  res.write('data: [DONE]\n\n');
+  res.end();
+};
+
+// Нормализация одной строки потока vLLM в общий контракт `data: {"text": "..."}`.
+// vLLM может слать SSE (`data: {...}`), сырой JSON построчно или голый текст.
+const emitVertexLine = (res, rawLine) => {
+  const line = rawLine.replace(/^data:\s*/, '').trim();
+  if (!line || line === '[DONE]') return;
+  try {
+    const parsed = JSON.parse(line);
+    const text = parsed.text
+      ?? parsed.predictions?.[0]
+      ?? parsed.choices?.[0]?.delta?.content
+      ?? parsed.choices?.[0]?.text
+      ?? '';
+    if (text) sendSSEText(res, text);
+  } catch {
+    sendSSEText(res, line); // не JSON — голый текстовый дельта-чанк
+  }
 };
 
 const normalizeOllamaModels = (payload) => {
@@ -252,6 +321,12 @@ const mergeRuntimeConfigPayload = (payload = {}, baseConfig = getRuntimeConfig()
   ollamaBaseUrl: payload.ollamaBaseUrl?.trim()
     ? payload.ollamaBaseUrl.trim()
     : baseConfig.ollamaBaseUrl || DEFAULT_OLLAMA_BASE_URL,
+  anthropicApiKey: payload.anthropicApiKey?.trim()
+    ? payload.anthropicApiKey
+    : baseConfig.anthropicApiKey,
+  huggingfaceApiKey: payload.huggingfaceApiKey?.trim()
+    ? payload.huggingfaceApiKey
+    : baseConfig.huggingfaceApiKey,
 });
 
 const saveRuntimeConfigToEnv = (payload) => {
@@ -266,6 +341,8 @@ const saveRuntimeConfigToEnv = (payload) => {
     googleGeminiProject,
     googleGeminiApiKey,
     ollamaBaseUrl,
+    anthropicApiKey,
+    huggingfaceApiKey,
   } = mergeRuntimeConfigPayload(payload);
 
   let envText = '';
@@ -285,6 +362,12 @@ const saveRuntimeConfigToEnv = (payload) => {
     envText = upsertEnvValue(envText, 'GOOGLE_GEMINI_API_KEY', googleGeminiApiKey);
   }
   envText = upsertEnvValue(envText, 'OLLAMA_BASE_URL', ollamaBaseUrl);
+  if (anthropicApiKey) {
+    envText = upsertEnvValue(envText, 'ANTHROPIC_API_KEY', anthropicApiKey);
+  }
+  if (huggingfaceApiKey) {
+    envText = upsertEnvValue(envText, 'HUGGINGFACE_API_KEY', huggingfaceApiKey);
+  }
 
   fs.writeFileSync(ENV_FILE_PATH, envText, 'utf8');
 };
@@ -324,6 +407,8 @@ app.get('/api/config/oauth', (req, res) => {
     googleGeminiProject: runtimeConfig.googleGeminiProject,
     geminiApiKeyConfigured: Boolean(runtimeConfig.googleGeminiApiKey),
     ollamaBaseUrl: runtimeConfig.ollamaBaseUrl,
+    anthropicApiKeyConfigured: Boolean(runtimeConfig.anthropicApiKey),
+    huggingfaceApiKeyConfigured: Boolean(runtimeConfig.huggingfaceApiKey),
     configured: {
       google: Boolean(runtimeConfig.googleClientId && runtimeConfig.googleClientSecret),
       github: Boolean(runtimeConfig.githubClientId && runtimeConfig.githubClientSecret),
@@ -502,35 +587,32 @@ app.post('/api/gemini', async (req, res) => {
       return res.status(400).json({ error: 'Промпт обязателен' });
     }
 
-    if (!req.session.googleAuth?.access_token) {
-      return res.status(401).json({ error: 'Google OAuth требуется для Gemini' });
-    }
+    const token = req.session.googleAuth?.access_token || loadAiTokens().gemini?.access_token;
+    let ai;
 
-    if (!runtimeConfig.googleGeminiProject) {
+    if (runtimeConfig.googleGeminiApiKey) {
+      ai = new GoogleGenAI({ apiKey: runtimeConfig.googleGeminiApiKey });
+    } else if (token && runtimeConfig.googleGeminiProject) {
+      const authClient = new OAuth2Client();
+      authClient.setCredentials({ access_token: token });
+      const loc = runtimeConfig.googleGeminiLocation || 'us-central1';
+      ai = new GoogleGenAI({ vertexai: true, project: runtimeConfig.googleGeminiProject, location: loc, authClient });
+    } else if (token) {
       return res.status(500).json({
         error: 'Google Gemini project is not configured',
         missing: ['GOOGLE_GEMINI_PROJECT'],
       });
+    } else {
+      return res.status(401).json({ error: 'Google OAuth требуется для Gemini' });
     }
 
-    const response = await fetch(`https://us-central1-aiplatform.googleapis.com/v1/projects/${runtimeConfig.googleGeminiProject}/locations/${runtimeConfig.googleGeminiLocation}/publishers/${runtimeConfig.googleGeminiPublisher}/models/${runtimeConfig.googleGeminiModel}:predict`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${req.session.googleAuth.access_token}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        instances: [{ prompt }],
-        parameters: { temperature: 0.7, maxOutputTokens: 512 }
-      })
+    const response = await ai.models.generateContent({
+      model: runtimeConfig.googleGeminiModel || 'gemini-2.0-flash',
+      contents: prompt,
+      config: { temperature: 0.7, maxOutputTokens: 512 }
     });
 
-    const data = await response.json();
-    if (!response.ok) {
-      return res.status(response.status).json({ error: 'Ошибка Gemini', details: data });
-    }
-
-    res.json(data);
+    res.json({ response: response.text });
   } catch (error) {
     console.error('Gemini API Error:', error);
     res.status(500).json({ error: 'Внутренняя ошибка Gemini API', message: error.message });
@@ -540,7 +622,7 @@ app.post('/api/gemini', async (req, res) => {
 app.post('/api/gemini/chat', async (req, res) => {
   try {
     const runtimeConfig = getRuntimeConfig();
-    const { text, history = [] } = req.body;
+    const { text, history = [], model } = req.body;
 
     if (!text) {
       return res.status(400).json({ error: 'Текст запроса обязателен' });
@@ -556,36 +638,30 @@ app.post('/api/gemini/chat', async (req, res) => {
     }
     contents.push({ role: 'user', parts: [{ text }] });
 
-    let apiUrl;
-    const headers = { 'Content-Type': 'application/json' };
-    let modelName = runtimeConfig.googleGeminiChatModel || 'gemini-2.0-flash';
-
+    let modelName = (typeof model === 'string' && model.trim()) ? model.trim() : (runtimeConfig.googleGeminiChatModel || 'gemini-2.0-flash');
+    const token = req.session.googleAuth?.access_token || loadAiTokens().gemini?.access_token;
+    
+    let ai;
     if (runtimeConfig.googleGeminiApiKey) {
-      apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${runtimeConfig.googleGeminiApiKey}`;
-    } else if (req.session.googleAuth?.access_token && runtimeConfig.googleGeminiProject) {
+      ai = new GoogleGenAI({ apiKey: runtimeConfig.googleGeminiApiKey });
+    } else if (token && runtimeConfig.googleGeminiProject) {
+      const authClient = new OAuth2Client();
+      authClient.setCredentials({ access_token: token });
       const loc = runtimeConfig.googleGeminiLocation || 'us-central1';
-      const vertexModel = modelName.includes('-00') ? modelName : `${modelName}-001`;
-      apiUrl = `https://${loc}-aiplatform.googleapis.com/v1/projects/${runtimeConfig.googleGeminiProject}/locations/${loc}/publishers/google/models/${vertexModel}:generateContent`;
-      headers['Authorization'] = `Bearer ${req.session.googleAuth.access_token}`;
-    } else if (req.session.googleAuth?.access_token) {
+      // Vertex models prefix with google/ optionally but genai handles standard names
+      ai = new GoogleGenAI({ vertexai: true, project: runtimeConfig.googleGeminiProject, location: loc, authClient });
+    } else if (token) {
       return res.status(500).json({ error: 'GOOGLE_GEMINI_PROJECT не настроен', missing: ['GOOGLE_GEMINI_PROJECT'] });
     } else {
       return res.status(401).json({ error: 'Необходим Gemini API Key или авторизация Google OAuth', missing: ['GOOGLE_GEMINI_API_KEY'] });
     }
 
-    const geminiResponse = await fetch(apiUrl, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify({ contents }),
+    const response = await ai.models.generateContent({
+      model: modelName,
+      contents,
     });
 
-    const data = await geminiResponse.json();
-    if (!geminiResponse.ok) {
-      return res.status(geminiResponse.status).json({ error: 'Ошибка Gemini API', details: data });
-    }
-
-    const responseText = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
-    return res.json({ response: responseText, model: modelName });
+    return res.json({ response: response.text || '', model: modelName });
   } catch (error) {
     console.error('Gemini Chat Error:', error);
     return res.status(500).json({ error: 'Ошибка Gemini Chat', message: error.message });
@@ -679,6 +755,48 @@ app.post('/api/ollama', async (req, res) => {
       error: 'Не удалось выполнить запрос к Ollama',
       message: error.message,
     });
+  }
+});
+
+app.post('/api/huggingface/chat', async (req, res) => {
+  try {
+    const { text, history = [], model = "Qwen/Qwen2.5-72B-Instruct", apiKey: requestApiKey } = req.body;
+    const runtimeConfig = getRuntimeConfig();
+    const apiKey = (typeof requestApiKey === 'string' && requestApiKey.trim())
+      ? requestApiKey.trim()
+      : runtimeConfig.huggingfaceApiKey;
+    
+    if (!apiKey) {
+      return res.status(401).json({ error: 'Необходим Hugging Face API Key. Введите его в настройках или укажите HUGGINGFACE_API_KEY в .env', missing: ['HUGGINGFACE_API_KEY'] });
+    }
+
+    const hf = new HfInference(apiKey);
+
+    if (!text) {
+      return res.status(400).json({ error: 'Текст запроса обязателен' });
+    }
+
+    const messages = [];
+    if (history.length === 0) {
+        messages.push({ role: "system", content: "Ты дружелюбный ИИ-помощник." });
+    }
+    
+    for (const msg of history) {
+        messages.push({ role: msg.role === 'user' ? 'user' : 'assistant', content: msg.content });
+    }
+    messages.push({ role: "user", content: text });
+
+    const out = await hf.chatCompletion({
+      model: model,
+      messages: messages,
+      max_tokens: 1024,
+    });
+
+    const responseText = out.choices[0]?.message?.content || '';
+    return res.json({ response: responseText, model: model });
+  } catch (error) {
+    console.error('Hugging Face API Error:', error);
+    return res.status(500).json({ error: 'Ошибка генерации Hugging Face', message: error.message });
   }
 });
 
@@ -798,7 +916,7 @@ app.post('/api/generate_image', async (req, res) => {
 // Эндпоинты под /api/auth/* используются панелью IntegrationsPanel.
 // ==========================================================================
 
-const OAUTH_PROVIDERS = {
+const getOAuthProviders = () => ({
   gemini: {
     name: 'Google Gemini',
     authUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
@@ -832,16 +950,44 @@ const OAUTH_PROVIDERS = {
     extraAuthParams: {},
     accountField: () => 'Claude account',
   },
-};
+});
 
-const AI_TOKENS_FILE = path.join(process.cwd(), '.oauth-tokens.json');
+const AI_TOKENS_FILE = path.join(process.cwd(), '.oauth-tokens.enc');
 const STATE_TTL_MS = 10 * 60 * 1000;
 
-const loadAiTokens = () => {
-  try { return JSON.parse(fs.readFileSync(AI_TOKENS_FILE, 'utf8')); } catch { return {}; }
+const TOKENS_KEY = crypto.createHash('sha256').update(SESSION_SECRET).digest();
+
+const encryptTokens = (data) => {
+  const iv = crypto.randomBytes(12);
+  const cipher = crypto.createCipheriv('aes-256-gcm', TOKENS_KEY, iv);
+  const encrypted = Buffer.concat([cipher.update(JSON.stringify(data), 'utf8'), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return Buffer.concat([iv, tag, encrypted]).toString('base64');
 };
+
+const decryptTokens = (encoded) => {
+  const buf = Buffer.from(encoded, 'base64');
+  const iv = buf.subarray(0, 12);
+  const tag = buf.subarray(12, 28);
+  const encrypted = buf.subarray(28);
+  const decipher = crypto.createDecipheriv('aes-256-gcm', TOKENS_KEY, iv);
+  decipher.setAuthTag(tag);
+  return JSON.parse(Buffer.concat([decipher.update(encrypted), decipher.final()]).toString('utf8'));
+};
+
+const loadAiTokens = () => {
+  try {
+    const raw = fs.readFileSync(AI_TOKENS_FILE, 'utf8').trim();
+    return decryptTokens(raw);
+  } catch {
+    // Попытка прочитать устаревший незашифрованный файл
+    const legacyPath = path.join(process.cwd(), '.oauth-tokens.json');
+    try { return JSON.parse(fs.readFileSync(legacyPath, 'utf8')); } catch { return {}; }
+  }
+};
+
 const saveAiTokens = (tokens) => {
-  try { fs.writeFileSync(AI_TOKENS_FILE, JSON.stringify(tokens, null, 2)); }
+  try { fs.writeFileSync(AI_TOKENS_FILE, encryptTokens(tokens)); }
   catch (e) { console.error('Не удалось сохранить токены OAuth:', e.message); }
 };
 
@@ -872,7 +1018,7 @@ const aiPopupResponse = (payload, source = 'omni-oauth') => {
 };
 
 app.get('/api/auth/:provider/start', (req, res) => {
-  const provider = OAUTH_PROVIDERS[req.params.provider];
+  const provider = getOAuthProviders()[req.params.provider];
   if (!provider) return res.status(404).send(aiPopupResponse({ ok: false, error: 'Неизвестный провайдер' }));
   if (!provider.clientId || !provider.clientSecret) {
     return res.send(aiPopupResponse({ ok: false, provider: req.params.provider, error: `${provider.name} не настроен. Задайте Client ID/Secret в .env` }));
@@ -895,7 +1041,7 @@ app.get('/api/auth/:provider/start', (req, res) => {
 
 app.get('/api/auth/:provider/callback', async (req, res) => {
   const providerKey = req.params.provider;
-  const provider = OAUTH_PROVIDERS[providerKey];
+  const provider = getOAuthProviders()[providerKey];
   if (!provider) return res.status(404).send(aiPopupResponse({ ok: false, error: 'Неизвестный провайдер' }));
 
   const { code, state, error: providerError } = req.query;
@@ -995,8 +1141,9 @@ app.post('/api/auth/telegram/callback', (req, res) => {
 app.get('/api/auth/status', (req, res) => {
   const tokens = loadAiTokens();
   const status = {};
-  for (const key of Object.keys(OAUTH_PROVIDERS)) {
-    const p = OAUTH_PROVIDERS[key];
+  const providers = getOAuthProviders();
+  for (const key of Object.keys(providers)) {
+    const p = providers[key];
     status[key] = {
       name: p.name,
       configured: Boolean(p.clientId && p.clientSecret),
@@ -1010,11 +1157,167 @@ app.get('/api/auth/status', (req, res) => {
 
 app.post('/api/auth/:provider/disconnect', (req, res) => {
   const providerKey = req.params.provider;
-  if (!OAUTH_PROVIDERS[providerKey]) return res.status(404).json({ error: 'Неизвестный провайдер' });
+  if (!getOAuthProviders()[providerKey]) return res.status(404).json({ error: 'Неизвестный провайдер' });
   const tokens = loadAiTokens();
   delete tokens[providerKey];
   saveAiTokens(tokens);
   res.json({ ok: true });
+});
+
+// Считает доступность каждого провайдера: ключ/OAuth/локальный сервис.
+const computeProviderStatus = async (req) => {
+  const runtimeConfig = getRuntimeConfig();
+  const providers = {};
+
+  providers['github-models'] = {
+    available: Boolean(githubModelsClient),
+    reason: githubModelsClient ? 'GITHUB_TOKEN настроен' : 'Нет GITHUB_TOKEN',
+  };
+
+  providers['anthropic'] = {
+    available: Boolean(runtimeConfig.anthropicApiKey),
+    reason: runtimeConfig.anthropicApiKey ? 'API-ключ настроен' : 'Нет ANTHROPIC_API_KEY',
+  };
+
+  providers['inception'] = {
+    available: Boolean(inceptionClient),
+    reason: inceptionClient ? 'API-ключ настроен' : 'Нет INCEPTION_API_KEY',
+  };
+
+  providers['huggingface'] = {
+    available: Boolean(runtimeConfig.huggingfaceApiKey),
+    reason: runtimeConfig.huggingfaceApiKey ? 'API-ключ настроен' : 'Нет HUGGINGFACE_API_KEY',
+  };
+
+  const geminiByKey = Boolean(runtimeConfig.googleGeminiApiKey);
+  const geminiByOAuth = Boolean(req.session.googleAuth?.access_token && runtimeConfig.googleGeminiProject);
+  providers['gemini'] = {
+    available: geminiByKey || geminiByOAuth,
+    reason: geminiByKey ? 'API-ключ настроен' : geminiByOAuth ? 'Google OAuth + проект' : 'Нужен ключ или OAuth+проект',
+  };
+
+  // Vertex и OMNI используют Google Application Default Credentials.
+  let adcOk = false;
+  try {
+    await Promise.race([
+      auth.getClient(),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 2500)),
+    ]);
+    adcOk = true;
+  } catch {
+    adcOk = false;
+  }
+  providers['vertex'] = { available: adcOk, reason: adcOk ? 'Google ADC доступны' : 'Нет Google credentials' };
+  providers['omni'] = { available: adcOk, reason: adcOk ? 'Google ADC доступны' : 'Нет Google credentials' };
+
+  try {
+    const ollamaResp = await fetch(buildServiceUrl(runtimeConfig.ollamaBaseUrl, '/api/tags'), {
+      signal: AbortSignal.timeout(2000),
+    });
+    providers['ollama'] = {
+      available: ollamaResp.ok,
+      reason: ollamaResp.ok ? 'Ollama отвечает' : `Ollama вернула ${ollamaResp.status}`,
+    };
+  } catch {
+    providers['ollama'] = { available: false, reason: 'Ollama недоступна' };
+  }
+
+  return providers;
+};
+
+// Динамическое обнаружение моделей у провайдеров, которые отдают каталог.
+const discoverOllamaModels = async (baseUrl) => {
+  try {
+    const r = await fetch(buildServiceUrl(baseUrl, '/api/tags'), { signal: AbortSignal.timeout(2500) });
+    if (!r.ok) return [];
+    return normalizeOllamaModels(await r.json()).map((m) => ({ id: `ollama/${m.name}`, label: m.name }));
+  } catch { return []; }
+};
+
+const discoverAnthropicModels = async (apiKey) => {
+  try {
+    const r = await fetch('https://api.anthropic.com/v1/models?limit=100', {
+      headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+      signal: AbortSignal.timeout(4000),
+    });
+    if (!r.ok) return [];
+    const data = await r.json();
+    return (data.data || []).map((m) => ({ id: m.id, label: m.display_name || m.id }));
+  } catch { return []; }
+};
+
+const discoverGeminiModels = async (apiKey) => {
+  try {
+    const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${apiKey}&pageSize=100`, {
+      signal: AbortSignal.timeout(4000),
+    });
+    if (!r.ok) return [];
+    const data = await r.json();
+    return (data.models || [])
+      .filter((m) => (m.supportedGenerationMethods || []).includes('generateContent'))
+      .map((m) => ({ id: m.name.replace(/^models\//, ''), label: m.displayName || m.name.replace(/^models\//, '') }));
+  } catch { return []; }
+};
+
+const discoverInceptionModels = async () => {
+  try {
+    const list = await inceptionClient.models.list();
+    return (list.data || []).map((m) => ({ id: m.id, label: m.id }));
+  } catch { return []; }
+};
+
+const discoverGitHubModels = async () => {
+  try {
+    const r = await fetch('https://models.github.ai/catalog/models', {
+      headers: { Authorization: `Bearer ${process.env.GITHUB_TOKEN}`, Accept: 'application/json' },
+      signal: AbortSignal.timeout(4000),
+    });
+    if (!r.ok) return [];
+    const data = await r.json();
+    const list = Array.isArray(data) ? data : (data.models || data.data || []);
+    return list
+      .map((m) => {
+        const id = m.id || m.name || (m.publisher && m.original_name ? `${m.publisher}/${m.original_name}` : null);
+        return id ? { id, label: m.friendly_name || m.display_name || m.name || id } : null;
+      })
+      .filter(Boolean);
+  } catch { return []; }
+};
+
+// Проверка доступности нейросетей. Используется переключателем моделей в UI.
+app.get('/api/ai/status', async (req, res) => {
+  const providers = await computeProviderStatus(req);
+  res.json({ providers, checkedAt: new Date().toISOString() });
+});
+
+// Автосканирование моделей: статус каждого провайдера + динамически
+// обнаруженный список моделей там, где провайдер отдаёт каталог.
+app.get('/api/ai/models', async (req, res) => {
+  const runtimeConfig = getRuntimeConfig();
+  const providers = await computeProviderStatus(req);
+  const result = {};
+
+  const discoveries = await Promise.all([
+    providers.ollama.available ? discoverOllamaModels(runtimeConfig.ollamaBaseUrl) : Promise.resolve([]),
+    providers.anthropic.available ? discoverAnthropicModels(runtimeConfig.anthropicApiKey) : Promise.resolve([]),
+    runtimeConfig.googleGeminiApiKey ? discoverGeminiModels(runtimeConfig.googleGeminiApiKey) : Promise.resolve([]),
+    providers['github-models'].available ? discoverGitHubModels() : Promise.resolve([]),
+    providers.inception.available ? discoverInceptionModels() : Promise.resolve([]),
+  ]);
+
+  const discovered = {
+    ollama: discoveries[0],
+    anthropic: discoveries[1],
+    gemini: discoveries[2],
+    'github-models': discoveries[3],
+    inception: discoveries[4],
+  };
+
+  for (const [key, status] of Object.entries(providers)) {
+    result[key] = { ...status, models: discovered[key] || [] };
+  }
+
+  res.json({ providers: result, checkedAt: new Date().toISOString() });
 });
 
 app.post('/api/vertex-ai/chat', async (req, res) => {
@@ -1066,23 +1369,27 @@ app.post('/api/vertex-ai/chat', async (req, res) => {
     }
 
     if (stream) {
-      res.setHeader('Content-Type', 'text/event-stream');
-      res.setHeader('Cache-Control', 'no-cache');
-      res.setHeader('Connection', 'keep-alive');
+      beginSSE(res);
 
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
-      
+      let buffer = '';
+
       while (true) {
         const { value, done } = await reader.read();
         if (done) break;
-        
-        const chunkStr = decoder.decode(value, { stream: true });
-        // Прямая пересылка SSE данных от vLLM (если они приходят в SSE формате)
-        res.write(chunkStr);
+
+        buffer += decoder.decode(value, { stream: true });
+        // vLLM может слать как SSE (`data: {...}`), так и сырой JSON построчно.
+        // Нормализуем в общий контракт `data: {"text": "..."}`, чтобы клиент
+        // не зависел от внутреннего формата контейнера.
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+        for (const rawLine of lines) emitVertexLine(res, rawLine);
       }
-      res.write('data: [DONE]\n\n');
-      return res.end();
+      // Флашим остаток: vLLM может вернуть весь ответ одним чанком без \n.
+      if (buffer.trim()) emitVertexLine(res, buffer);
+      return endSSE(res);
     }
 
     const data = await response.json();
@@ -1105,7 +1412,7 @@ app.post('/api/vertex-ai/chat', async (req, res) => {
 
 app.post('/api/github-models/chat', async (req, res) => {
   try {
-    const { prompt, system, model, temperature, top_p, stream } = req.body || {};
+    const { prompt, system, model, temperature, top_p, stream, history = [] } = req.body || {};
 
     if (!githubModelsClient) {
       return res.status(500).json({
@@ -1129,32 +1436,43 @@ app.post('/api/github-models/chat', async (req, res) => {
           ? system
           : 'Ты полезный ассистент. Отвечай кратко и по делу.',
       },
+      ...Array.isArray(history)
+        ? history.filter(m => m.role === 'user' || m.role === 'assistant').map(m => ({ role: m.role, content: m.content }))
+        : [],
       {
         role: 'user',
         content: prompt,
       },
     ];
 
-    const response = await githubModelsClient.chat.completions.create({
-      model: safeModel,
-      messages,
-      temperature: safeTemperature,
-      top_p: safeTopP,
-      stream: !!stream
-    });
+    // Reasoning-модели (gpt-5-mini/nano, o-серия) принимают только temperature=1
+    // и игнорируют top_p — при ошибке несовместимости повторяем без этих полей.
+    const createCompletion = async () => {
+      try {
+        return await githubModelsClient.chat.completions.create({
+          model: safeModel, messages, temperature: safeTemperature, top_p: safeTopP, stream: !!stream,
+        });
+      } catch (err) {
+        const msg = String(err?.message || '');
+        if (/temperature|top_p|unsupported/i.test(msg)) {
+          return await githubModelsClient.chat.completions.create({
+            model: safeModel, messages, stream: !!stream,
+          });
+        }
+        throw err;
+      }
+    };
+
+    const response = await createCompletion();
 
     if (stream) {
-      res.setHeader('Content-Type', 'text/event-stream');
-      res.setHeader('Cache-Control', 'no-cache');
-      res.setHeader('Connection', 'keep-alive');
-
+      beginSSE(res);
       for await (const chunk of response) {
         if (chunk.choices[0]?.delta?.content) {
-          res.write(`data: ${JSON.stringify({ text: chunk.choices[0].delta.content })}\n\n`);
+          sendSSEText(res, chunk.choices[0].delta.content);
         }
       }
-      res.write('data: [DONE]\n\n');
-      return res.end();
+      return endSSE(res);
     }
 
     const choice = response.choices?.[0];
@@ -1172,6 +1490,59 @@ app.post('/api/github-models/chat', async (req, res) => {
       error: 'Внутренняя ошибка прокси GitHub Models',
       message: error?.message || 'Unknown error',
     });
+  }
+});
+
+app.post('/api/inception/chat', async (req, res) => {
+  try {
+    const { prompt, system, model, temperature, top_p, reasoning_effort, stream, history = [] } = req.body || {};
+
+    if (!inceptionClient) {
+      return res.status(500).json({ error: 'Inception не настроен', message: 'Добавьте INCEPTION_API_KEY в .env' });
+    }
+    if (!prompt || typeof prompt !== 'string') {
+      return res.status(400).json({ error: 'Требуется текстовый prompt' });
+    }
+
+    const safeModel = typeof model === 'string' && model.trim() ? model : 'mercury-2';
+    const messages = [
+      {
+        role: 'system',
+        content: typeof system === 'string' && system.trim() ? system : 'Ты полезный ассистент. Отвечай кратко и по делу.',
+      },
+      ...Array.isArray(history)
+        ? history.filter((m) => m.role === 'user' || m.role === 'assistant').map((m) => ({ role: m.role, content: m.content }))
+        : [],
+      { role: 'user', content: prompt },
+    ];
+
+    const params = { model: safeModel, messages, stream: !!stream };
+    if (typeof temperature === 'number') params.temperature = temperature;
+    if (typeof top_p === 'number') params.top_p = top_p;
+    if (typeof reasoning_effort === 'string' && reasoning_effort) params.reasoning_effort = reasoning_effort;
+
+    const response = await inceptionClient.chat.completions.create(params);
+
+    if (stream) {
+      beginSSE(res);
+      for await (const chunk of response) {
+        if (chunk.choices[0]?.delta?.content) {
+          sendSSEText(res, chunk.choices[0].delta.content);
+        }
+      }
+      return endSSE(res);
+    }
+
+    const choice = response.choices?.[0];
+    return res.json({
+      ok: true,
+      model: response.model,
+      text: choice?.message?.content ?? '',
+      usage: response.usage || null,
+    });
+  } catch (error) {
+    console.error('Inception proxy error:', error);
+    return res.status(500).json({ error: 'Внутренняя ошибка прокси Inception', message: error?.message || 'Unknown error' });
   }
 });
 
@@ -1235,6 +1606,62 @@ app.post('/api/github-models/responses', async (req, res) => {
       error: 'Внутренняя ошибка Responses API',
       message: error?.message || 'Unknown error',
     });
+  }
+});
+
+app.post('/api/anthropic/chat', async (req, res) => {
+  try {
+    const { prompt, system, model, temperature, max_tokens, stream, history = [], apiKey: requestApiKey } = req.body || {};
+
+    if (!prompt || typeof prompt !== 'string') {
+      return res.status(400).json({ error: 'Требуется текстовый prompt' });
+    }
+
+    const runtimeConfig = getRuntimeConfig();
+    // Ключ из запроса (введён в UI) приоритетнее серверного .env.
+    const apiKey = (typeof requestApiKey === 'string' && requestApiKey.trim())
+      ? requestApiKey.trim()
+      : runtimeConfig.anthropicApiKey;
+    if (!apiKey) {
+      return res.status(500).json({ error: 'Anthropic API Key не настроен', missing: ['ANTHROPIC_API_KEY'] });
+    }
+
+    const client = new Anthropic({ apiKey });
+
+    const messages = [];
+    for (const msg of history) {
+      if (msg.role === 'user' || msg.role === 'assistant') {
+        messages.push({ role: msg.role, content: msg.content });
+      }
+    }
+    messages.push({ role: 'user', content: prompt });
+
+    const safeModel = typeof model === 'string' && model.trim() ? model : 'claude-sonnet-4-6';
+    const params = {
+      model: safeModel,
+      max_tokens: max_tokens || 1024,
+      temperature: temperature ?? 0.7,
+      messages,
+      ...(system ? { system } : {}),
+    };
+
+    if (stream) {
+      beginSSE(res);
+      const messageStream = await client.messages.stream(params);
+      for await (const chunk of messageStream) {
+        if (chunk.type === 'content_block_delta' && chunk.delta?.type === 'text_delta') {
+          sendSSEText(res, chunk.delta.text);
+        }
+      }
+      return endSSE(res);
+    }
+
+    const message = await client.messages.create(params);
+    const text = message.content.filter(b => b.type === 'text').map(b => b.text).join('');
+    return res.json({ ok: true, model: message.model, text, usage: message.usage });
+  } catch (error) {
+    console.error('Anthropic chat error:', error);
+    return res.status(500).json({ error: 'Ошибка Anthropic API', message: error.message });
   }
 });
 

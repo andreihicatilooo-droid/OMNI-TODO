@@ -11,8 +11,11 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.106.0",
+    "@dagrejs/dagre": "^3.0.0",
     "@google-cloud/vertexai": "^1.12.0",
     "@google/genai": "^2.10.0",
+    "@huggingface/inference": "^4.13.20",
     "@mcp-ui/client": "^7.1.1",
     "@mcp-ui/server": "^6.1.0",
     "@modelcontextprotocol/ext-apps": "^1.7.4",

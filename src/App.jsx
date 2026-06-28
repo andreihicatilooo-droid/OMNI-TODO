@@ -18,6 +18,7 @@ const emptyState = {
   items: [],
   projects: [],
   mindmaps: [],
+  workflows: [],
   gallery: [],
 };
 
@@ -84,6 +85,12 @@ const appReducer = (state, action) => {
       return { ...state, mindmaps: (state.mindmaps || []).map(m => m.id === action.payload.id ? { ...m, ...action.payload } : m) };
     case 'DELETE_MINDMAP':
       return { ...state, mindmaps: (state.mindmaps || []).filter(m => m.id !== action.payload) };
+    case 'ADD_WORKFLOW':
+      return { ...state, workflows: [...(state.workflows || []), { id: Date.now(), created: new Date().toISOString(), ...action.payload }] };
+    case 'UPDATE_WORKFLOW':
+      return { ...state, workflows: (state.workflows || []).map(w => w.id === action.payload.id ? { ...w, ...action.payload } : w) };
+    case 'DELETE_WORKFLOW':
+      return { ...state, workflows: (state.workflows || []).filter(w => w.id !== action.payload) };
     case 'ADD_IMAGE':
       return { ...state, gallery: [{ id: Date.now(), created: new Date().toISOString(), ...action.payload }, ...(state.gallery || [])] };
     case 'DELETE_IMAGE':
@@ -109,6 +116,7 @@ function App() {
   const [error, setError] = useState('');
   const [state, dispatch] = useReducer(appReducer, emptyState);
   const [password, setPassword] = useState('');
+  const [saveStatus, setSaveStatus] = useState('idle'); // 'idle' | 'saving' | 'saved' | 'error'
 
   // Файл-БД, с которым ведётся работа в текущей сессии.
   const supportsFS = fsAccessSupported();
@@ -117,6 +125,7 @@ function App() {
   const [pendingFile, setPendingFile] = useState(null); // { content, name, handle, drive } выбран, но не разблокирован
   const [canReopen, setCanReopen] = useState(false);    // есть запомненный последний файл
   const saveTimer = useRef(null);
+  const savedTimer = useRef(null);
   const telegramAuthConfig = useMemo(() => import.meta.env.VITE_TELEGRAM_BOT_USERNAME ? {
     enabled: true,
     botUsername: import.meta.env.VITE_TELEGRAM_BOT_USERNAME,
@@ -154,27 +163,33 @@ function App() {
   // Дебаунс, чтобы не писать на каждый кейстрок.
   const persist = useCallback(async (nextState) => {
     if (!password) return;
+    setSaveStatus('saving');
     try {
       const payload = await encryptData(nextState, password);
       // 1. Активный файл на Google Drive
       if (driveFileRef.current?.fileId) {
         await updateVaultOnDrive(driveFileRef.current.fileId, payload);
-        return;
-      }
-      // 2. Локальный файл через File System Access API
-      const handle = vaultHandleRef.current;
-      if (supportsFS && handle) {
-        const ok = await verifyPermission(handle, true);
-        if (ok) {
-          await writeToHandle(handle, payload);
-          return;
+      } else {
+        // 2. Локальный файл через File System Access API
+        const handle = vaultHandleRef.current;
+        if (supportsFS && handle) {
+          const ok = await verifyPermission(handle, true);
+          if (ok) {
+            await writeToHandle(handle, payload);
+          } else {
+            await saveVault(payload);
+          }
+        } else {
+          // 3. Fallback: localStorage
+          await saveVault(payload);
         }
-        // нет разрешения — подстрахуемся localStorage
       }
-      // 3. Fallback: localStorage
-      await saveVault(payload);
+      setSaveStatus('saved');
+      if (savedTimer.current) clearTimeout(savedTimer.current);
+      savedTimer.current = setTimeout(() => setSaveStatus('idle'), 2500);
     } catch (e) {
       console.error('Не удалось сохранить базу', e);
+      setSaveStatus('error');
     }
   }, [password, supportsFS]);
 
@@ -418,6 +433,51 @@ function App() {
     }
   };
 
+  const handleSaveNow = useCallback(async () => {
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    await persist(state);
+  }, [persist, state]);
+
+  const handleImportVault = useCallback(async (file) => {
+    if (!password || !file) return;
+    try {
+      const content = await file.text();
+      const decrypted = await decryptData(content, password);
+      dispatch({ type: 'LOAD', payload: decrypted });
+      // persist immediately so the imported data is saved
+      const payload = await encryptData(decrypted, password);
+      if (driveFileRef.current?.fileId) {
+        await updateVaultOnDrive(driveFileRef.current.fileId, payload);
+      } else if (supportsFS && vaultHandleRef.current) {
+        const ok = await verifyPermission(vaultHandleRef.current, true);
+        if (ok) await writeToHandle(vaultHandleRef.current, payload);
+        else await saveVault(payload);
+      } else {
+        await saveVault(payload);
+      }
+      setSaveStatus('saved');
+      if (savedTimer.current) clearTimeout(savedTimer.current);
+      savedTimer.current = setTimeout(() => setSaveStatus('idle'), 2500);
+      return { ok: true };
+    } catch (e) {
+      console.error(e);
+      return { ok: false, error: e.message };
+    }
+  }, [password, supportsFS]);
+
+  // Ctrl+S — немедленное сохранение
+  useEffect(() => {
+    if (locked) return;
+    const handler = (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 's') {
+        e.preventDefault();
+        handleSaveNow();
+      }
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [locked, handleSaveNow]);
+
   return (
     <div data-theme={state.settings?.theme || 'liwood'} className="min-h-screen bg-theme-bg font-sans text-theme-text overflow-hidden relative transition-colors duration-500">
       <ShaderBG type="noise" color={state.settings?.theme === 'cyberpunk' ? '#06B6D4' : state.settings?.theme === 'dark' ? '#CBA57A' : '#B89B72'} opacity={0.15} />
@@ -453,6 +513,9 @@ function App() {
             dispatch={dispatch}
             onLock={handleLock}
             onExportVault={handleExportVault}
+            onSaveNow={handleSaveNow}
+            onImportVault={handleImportVault}
+            saveStatus={saveStatus}
             vaultName={vaultName}
             storageLocation={storageLocation}
             googleProfile={googleProfile}

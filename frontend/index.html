@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Мой ИИ Чат</title>
+    <style>
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background-color: #f4f7f6;
+            margin: 0;
+            padding: 20px;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100vh;
+        }
+        .chat-container {
+            background-color: #ffffff;
+            width: 100%;
+            max-width: 500px;
+            border-radius: 12px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+            padding: 30px;
+            box-sizing: border-box;
+        }
+        h1 {
+            text-align: center;
+            color: #333;
+            margin-top: 0;
+        }
+        .input-group {
+            display: flex;
+            margin-bottom: 20px;
+        }
+        input[type="text"] {
+            flex: 1;
+            padding: 12px;
+            border: 1px solid #ddd;
+            border-radius: 8px 0 0 8px;
+            font-size: 16px;
+            outline: none;
+        }
+        input[type="text"]:focus {
+            border-color: #007bff;
+        }
+        button {
+            padding: 12px 20px;
+            background-color: #007bff;
+            color: white;
+            border: none;
+            border-radius: 0 8px 8px 0;
+            cursor: pointer;
+            font-size: 16px;
+            transition: background-color 0.2s;
+        }
+        button:hover {
+            background-color: #0056b3;
+        }
+        button:disabled {
+            background-color: #a0c4ff;
+            cursor: not-allowed;
+        }
+        .response-box {
+            background-color: #f8f9fa;
+            padding: 15px;
+            border-radius: 8px;
+            min-height: 80px;
+            color: #444;
+            line-height: 1.5;
+            white-space: pre-wrap;
+            border: 1px solid #eaeaea;
+        }
+        .loading {
+            color: #007bff;
+            font-style: italic;
+        }
+        .error {
+            color: #dc3545;
+        }
+    </style>
+</head>
+<body>
+    <div class="chat-container">
+        <h1>Чат с ИИ (Hugging Face)</h1>
+        
+        <div class="input-group">
+            <input type="text" id="userInput" placeholder="Напиши сообщение (например, 'Привет!')..." onkeypress="handleKeyPress(event)">
+            <button id="sendBtn" onclick="sendMessage()">Отправить</button>
+        </div>
+        
+        <div class="response-box" id="aiResponse">
+            Здесь появится ответ ИИ...
+        </div>
+    </div>
+
+    <script>
+        function handleKeyPress(e) {
+            if (e.key === 'Enter') {
+                sendMessage();
+            }
+        }
+
+        async function sendMessage() {
+            const inputElement = document.getElementById('userInput');
+            const responseElement = document.getElementById('aiResponse');
+            const sendBtn = document.getElementById('sendBtn');
+            const text = inputElement.value.trim();
+            
+            if (!text) return;
+
+            // Блокируем интерфейс во время запроса
+            inputElement.disabled = true;
+            sendBtn.disabled = true;
+            responseElement.innerHTML = "<span class='loading'>ИИ думает...</span>";
+
+            try {
+                // Обращаемся к нашему бэкенду
+                const response = await fetch('http://localhost:3000/api/chat', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ message: text })
+                });
+                
+                const data = await response.json();
+                
+                if (!response.ok) {
+                    throw new Error(data.error || 'Ошибка сервера');
+                }
+                
+                responseElement.innerText = data.reply;
+            } catch (error) {
+                responseElement.innerHTML = `<span class='error'>Произошла ошибка: ${error.message}</span><br><br><small>Убедитесь, что бэкенд (сервер) запущен, и вы вставили правильный токен Hugging Face в server.js.</small>`;
+            } finally {
+                // Разблокируем интерфейс
+                inputElement.disabled = false;
+                sendBtn.disabled = false;
+                inputElement.value = '';
+                inputElement.focus();
+            }
+        }
+    </script>
+</body>
+</html>

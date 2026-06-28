@@ -1,7 +1,34 @@
 import React, { useState } from 'react';
-import { Menu, X, Settings, Plus, Search, Trash2, Pin, Share2, GitBranch, Clock, LogOut, KeyRound, Bot, Send, Image as ImageIcon, Loader2, XCircle, Lock, Database, Download, Upload, Network, CheckCircle } from 'lucide-react';
+import { Menu, X, Settings, Plus, Search, Trash2, Pin, Share2, GitBranch, Clock, LogOut, KeyRound, Bot, Send, Image as ImageIcon, Loader2, XCircle, Lock, Database, Download, Upload, Network, CheckCircle, ChevronDown, RefreshCw, Save, AlertCircle, Workflow } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import MindmapView from './MindmapView';
+import WorkflowView from './WorkflowView';
+import { MODEL_OPTIONS, DEFAULT_MODEL, normalizeHistory, providerOf, PROVIDER_LABELS } from '../lib/aiProviders';
+import { callModel } from '../lib/aiClient';
+
+// ── Save Status Badge ──────────────────────────────────────────────────────
+const SaveStatusBadge = ({ status, onSaveNow }) => {
+  if (status === 'saving') return (
+    <span className="flex items-center gap-1.5 text-[10px] font-mono text-theme-muted">
+      <Loader2 size={10} className="animate-spin text-theme-accent" /> Сохранение...
+    </span>
+  );
+  if (status === 'saved') return (
+    <span className="flex items-center gap-1.5 text-[10px] font-mono text-green-500">
+      <CheckCircle size={10} /> Сохранено
+    </span>
+  );
+  if (status === 'error') return (
+    <span className="flex items-center gap-1.5 text-[10px] font-mono text-red-500 cursor-pointer" onClick={onSaveNow} title="Повторить">
+      <AlertCircle size={10} /> Ошибка сохранения
+    </span>
+  );
+  return (
+    <span className="flex items-center gap-1.5 text-[10px] font-mono text-theme-muted">
+      <span className="w-1.5 h-1.5 rounded-full bg-theme-accent animate-pulse" /> READY
+    </span>
+  );
+};
 // ==== ELEGANT TITLE ====
 export const ElegantTitle = ({ children, className = '' }) => {
   return (
@@ -235,6 +262,312 @@ const BaseView = ({ state, dispatch }) => {
   );
 };
 
+// ==== ПЕРЕКЛЮЧАТЕЛЬ НЕЙРОСЕТЕЙ + ПРОВЕРКА ДОСТУПА ====
+const ModelSwitcher = ({ selectedModel, onSelect }) => {
+  const [open, setOpen] = React.useState(false);
+  const [status, setStatus] = React.useState(null); // { providers: {...} }
+  const [checking, setChecking] = React.useState(false);
+  const rootRef = React.useRef(null);
+
+  const checkAccess = React.useCallback(async () => {
+    setChecking(true);
+    try {
+      const res = await fetch('/api/ai/status');
+      const data = await res.json();
+      setStatus(data);
+    } catch {
+      setStatus({ providers: {} });
+    } finally {
+      setChecking(false);
+    }
+  }, []);
+
+  React.useEffect(() => { checkAccess(); }, [checkAccess]);
+
+  React.useEffect(() => {
+    const onClickOutside = (e) => {
+      if (rootRef.current && !rootRef.current.contains(e.target)) setOpen(false);
+    };
+    document.addEventListener('mousedown', onClickOutside);
+    return () => document.removeEventListener('mousedown', onClickOutside);
+  }, []);
+
+  const availabilityOf = (modelId) => {
+    if (!status?.providers) return null; // ещё не проверено
+    return status.providers[providerOf(modelId)]?.available ?? false;
+  };
+  const reasonOf = (modelId) => status?.providers?.[providerOf(modelId)]?.reason || '';
+
+  const current = MODEL_OPTIONS.find((m) => m.id === selectedModel);
+  const currentLabel = current?.label || selectedModel;
+  const currentAvail = availabilityOf(selectedModel);
+
+  const dotClass = (avail) =>
+    avail === null ? 'bg-theme-muted/40' : avail ? 'bg-emerald-500' : 'bg-red-500';
+
+  const groups = MODEL_OPTIONS.reduce((acc, opt) => {
+    (acc[opt.group] ||= []).push(opt);
+    return acc;
+  }, {});
+
+  return (
+    <div ref={rootRef} className="relative shrink-0 ml-2">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="flex items-center gap-2 text-xs font-mono bg-theme-bg px-2.5 py-1.5 rounded-lg border border-theme-border hover:border-theme-accent/50 transition-all"
+        title={currentAvail === false ? `Недоступно: ${reasonOf(selectedModel)}` : currentLabel}
+      >
+        <span className={`w-2 h-2 rounded-full ${dotClass(currentAvail)}`} />
+        <span className="text-theme-text max-w-[140px] truncate">{currentLabel}</span>
+        <ChevronDown size={13} className={`text-theme-muted transition-transform ${open ? 'rotate-180' : ''}`} />
+      </button>
+
+      {open && (
+        <div className="absolute right-0 mt-2 w-72 max-h-[60vh] overflow-y-auto custom-scrollbar bg-theme-panel border border-theme-border rounded-xl shadow-xl z-50 py-1.5">
+          <div className="flex items-center justify-between px-3 py-1.5 border-b border-theme-border mb-1">
+            <span className="text-[10px] font-bold uppercase tracking-wider text-theme-muted">Нейросеть</span>
+            <button
+              onClick={checkAccess}
+              disabled={checking}
+              className="flex items-center gap-1 text-[10px] text-theme-accent hover:underline disabled:opacity-50"
+              title="Проверить доступ ко всем нейросетям"
+            >
+              <RefreshCw size={11} className={checking ? 'animate-spin' : ''} /> Проверить
+            </button>
+          </div>
+
+          {Object.entries(groups).map(([group, opts]) => (
+            <div key={group}>
+              <div className="px-3 pt-1.5 pb-0.5 text-[10px] font-semibold text-theme-muted/70 uppercase">{group}</div>
+              {opts.map((opt) => {
+                const avail = availabilityOf(opt.id);
+                const active = opt.id === selectedModel;
+                return (
+                  <button
+                    key={opt.id}
+                    onClick={() => { onSelect(opt.id); setOpen(false); }}
+                    title={reasonOf(opt.id)}
+                    className={`w-full flex items-center gap-2.5 px-3 py-2 text-left text-sm transition-colors ${
+                      active ? 'bg-theme-accent/15 text-theme-text' : 'text-theme-muted hover:bg-theme-bg/60 hover:text-theme-text'
+                    }`}
+                  >
+                    <span className={`w-2 h-2 rounded-full shrink-0 ${dotClass(avail)}`} />
+                    <span className="flex-1 truncate">{opt.label}</span>
+                    {active && <CheckCircle size={14} className="text-theme-accent shrink-0" />}
+                  </button>
+                );
+              })}
+            </div>
+          ))}
+
+          {status && (
+            <p className="px-3 pt-2 mt-1 border-t border-theme-border text-[10px] text-theme-muted/60">
+              🟢 доступно · 🔴 нужен ключ/OAuth · ⚪ не проверено
+            </p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
+
+// ==== АВТОСКАНИРОВАНИЕ МОДЕЛЕЙ (настройки) ====
+const PROVIDER_ORDER = ['github-models', 'anthropic', 'gemini', 'inception', 'huggingface', 'vertex', 'ollama', 'omni'];
+
+const ModelScanner = ({ selectedModel, onSelect, settings }) => {
+  const [data, setData] = React.useState(null); // { providers: { key: { available, reason, models } } }
+  const [scanning, setScanning] = React.useState(false);
+  const [error, setError] = React.useState(null);
+
+  // --- Тестовый запрос к выбранной модели ---
+  const [testPrompt, setTestPrompt] = React.useState('Ответь одним коротким предложением: ты на связи?');
+  const [testing, setTesting] = React.useState(false);
+  const [testResult, setTestResult] = React.useState(null); // { ok, text, latencyMs, provider, error }
+
+  const runTest = async () => {
+    if (!testPrompt.trim() || testing) return;
+    setTesting(true);
+    setTestResult(null);
+    const startedAt = performance.now();
+    try {
+      // Тот же путь, что и в чате: callModel → resolveProvider → эндпоинт.
+      const { text, provider } = await callModel({
+        modelId: selectedModel,
+        prompt: testPrompt.trim(),
+        settings,
+        stream: false, // для теста проще и нагляднее без стрима
+      });
+      setTestResult({ ok: true, text, provider, latencyMs: Math.round(performance.now() - startedAt) });
+    } catch (e) {
+      setTestResult({ ok: false, error: e.message || 'Неизвестная ошибка', latencyMs: Math.round(performance.now() - startedAt) });
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  const scan = React.useCallback(async () => {
+    setScanning(true);
+    setError(null);
+    try {
+      const res = await fetch('/api/ai/models');
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setData(await res.json());
+    } catch (e) {
+      setError(e.message || 'Не удалось просканировать');
+    } finally {
+      setScanning(false);
+    }
+  }, []);
+
+  // Автозапуск при открытии настроек.
+  React.useEffect(() => { scan(); }, [scan]);
+
+  // Статичные модели из реестра, сгруппированные по провайдеру.
+  const staticByProvider = React.useMemo(() => {
+    const acc = {};
+    for (const opt of MODEL_OPTIONS) {
+      (acc[providerOf(opt.id)] ||= []).push({ id: opt.id, label: opt.label });
+    }
+    return acc;
+  }, []);
+
+  // Слияние статичных и обнаруженных моделей (без дублей по id).
+  const modelsForProvider = (key) => {
+    const discovered = data?.providers?.[key]?.models || [];
+    const merged = [...(staticByProvider[key] || [])];
+    const seen = new Set(merged.map((m) => m.id));
+    for (const m of discovered) {
+      if (!seen.has(m.id)) { merged.push(m); seen.add(m.id); }
+    }
+    return merged;
+  };
+
+  const totalDiscovered = data
+    ? Object.values(data.providers).reduce((n, p) => n + (p.models?.length || 0), 0)
+    : 0;
+
+  const dotClass = (avail) => (avail === undefined ? 'bg-theme-muted/40' : avail ? 'bg-emerald-500' : 'bg-red-500');
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center justify-between">
+        <div>
+          <p className="text-theme-text font-medium">Модель ИИ</p>
+          <p className="text-sm text-theme-muted mt-1">
+            {scanning
+              ? 'Сканирование нейросетей…'
+              : data
+                ? `Найдено моделей: ${MODEL_OPTIONS.length + totalDiscovered} · обнаружено вживую: ${totalDiscovered}`
+                : 'Выберите модель для работы с запросами'}
+          </p>
+        </div>
+        <button
+          onClick={scan}
+          disabled={scanning}
+          className="flex items-center gap-2 bg-theme-panel border border-theme-border rounded-xl px-3 py-2 text-sm text-theme-text hover:border-theme-accent transition-all disabled:opacity-50 shrink-0"
+          title="Просканировать доступные нейросети и их модели"
+        >
+          <RefreshCw size={14} className={scanning ? 'animate-spin' : ''} />
+          {scanning ? 'Сканирую…' : 'Сканировать'}
+        </button>
+      </div>
+
+      {error && (
+        <div className="text-xs text-red-500 bg-red-500/10 border border-red-500/20 rounded-lg px-3 py-2">
+          Ошибка сканирования: {error}
+        </div>
+      )}
+
+      <div className="bg-theme-bg border border-theme-border rounded-xl p-2 max-h-80 overflow-y-auto custom-scrollbar space-y-3">
+        {PROVIDER_ORDER.map((key) => {
+          const models = modelsForProvider(key);
+          if (models.length === 0) return null;
+          const status = data?.providers?.[key];
+          const avail = status?.available;
+          return (
+            <div key={key}>
+              <div className="flex items-center gap-2 px-2 py-1 sticky top-0 bg-theme-bg z-10">
+                <span className={`w-2 h-2 rounded-full shrink-0 ${dotClass(avail)}`} />
+                <span className="text-xs font-bold uppercase tracking-wider text-theme-muted">{PROVIDER_LABELS[key] || key}</span>
+                {status && (
+                  <span className="text-[10px] text-theme-muted/60 truncate">— {status.reason}</span>
+                )}
+                <span className="ml-auto text-[10px] text-theme-muted/50">{models.length}</span>
+              </div>
+              <div className="space-y-0.5 mt-0.5">
+                {models.map((m) => {
+                  const active = m.id === selectedModel;
+                  const discovered = (data?.providers?.[key]?.models || []).some((d) => d.id === m.id)
+                    && !(staticByProvider[key] || []).some((s) => s.id === m.id);
+                  return (
+                    <button
+                      key={m.id}
+                      onClick={() => onSelect(m.id)}
+                      title={avail === false ? status?.reason : m.id}
+                      className={`w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-left text-sm transition-colors ${
+                        active ? 'bg-theme-accent/15 text-theme-text border border-theme-accent/40' : 'text-theme-muted hover:bg-theme-panel/60 hover:text-theme-text border border-transparent'
+                      }`}
+                    >
+                      <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${dotClass(avail)}`} />
+                      <span className="flex-1 truncate">{m.label}</span>
+                      {discovered && <span className="text-[9px] px-1.5 py-0.5 rounded bg-theme-accent/10 text-theme-accent shrink-0">live</span>}
+                      {active && <CheckCircle size={14} className="text-theme-accent shrink-0" />}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      <p className="text-[11px] text-theme-muted/60">🟢 доступно · 🔴 нужен ключ/OAuth · ⚪ не проверено · «live» — модель обнаружена сканированием</p>
+
+      {/* Тестовый запрос к выбранной модели */}
+      <div className="mt-2 bg-theme-bg border border-theme-border rounded-xl p-3 space-y-2.5">
+        <div className="flex items-center justify-between gap-2">
+          <p className="text-sm font-medium text-theme-text flex items-center gap-2">
+            <Send size={13} className="text-theme-accent" /> Тестовый запрос
+          </p>
+          <span className="text-[10px] font-mono text-theme-muted truncate max-w-[160px]" title={selectedModel}>
+            {MODEL_OPTIONS.find((m) => m.id === selectedModel)?.label || selectedModel}
+          </span>
+        </div>
+        <textarea
+          value={testPrompt}
+          onChange={(e) => setTestPrompt(e.target.value)}
+          rows={2}
+          placeholder="Введите промпт для проверки модели…"
+          className="w-full bg-theme-panel border border-theme-border rounded-lg px-3 py-2 text-sm text-theme-text outline-none focus:border-theme-accent transition-all resize-none custom-scrollbar"
+        />
+        <div className="flex items-center gap-2">
+          <button
+            onClick={runTest}
+            disabled={testing || !testPrompt.trim()}
+            className="flex items-center gap-2 bg-theme-accent text-theme-bg rounded-lg px-3.5 py-2 text-sm font-semibold hover:bg-theme-accent-hover transition-all disabled:opacity-50 active:scale-95"
+          >
+            {testing ? <Loader2 size={14} className="animate-spin" /> : <Send size={14} />}
+            {testing ? 'Отправка…' : 'Отправить тест'}
+          </button>
+          {testResult && (
+            <span className={`text-xs font-mono ${testResult.ok ? 'text-emerald-500' : 'text-red-500'}`}>
+              {testResult.ok ? `✓ ${testResult.provider} · ${testResult.latencyMs} мс` : `✗ ${testResult.latencyMs} мс`}
+            </span>
+          )}
+        </div>
+        {testResult && (
+          <div className={`text-sm rounded-lg px-3 py-2 whitespace-pre-wrap leading-relaxed border ${
+            testResult.ok
+              ? 'bg-theme-panel text-theme-text border-theme-border'
+              : 'bg-red-500/10 text-red-500 border-red-500/20'
+          }`}>
+            {testResult.ok ? (testResult.text || '(пустой ответ)') : testResult.error}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
 // ==== OMNI AI VIEW (Mind Extractor) ====
 const OmniView = ({ state, dispatch }) => {
   const sessions = state.chatSessions || [];
@@ -243,6 +576,7 @@ const OmniView = ({ state, dispatch }) => {
   const [loading, setLoading] = React.useState(false);
   const [editingName, setEditingName] = React.useState(null);
   const [editNameValue, setEditNameValue] = React.useState('');
+  const [expandedDetails, setExpandedDetails] = React.useState({});
   const chatContainerRef = React.useRef(null);
 
   const activeChat = sessions.find(s => s.id === activeChatId);
@@ -314,105 +648,30 @@ const OmniView = ({ state, dispatch }) => {
     setLoading(true);
 
     try {
-      const selectedModel = state.settings?.aiModel || 'openai/gpt-5-chat';
-      const useGitHubModels = selectedModel.includes('/');
+      const selectedModel = state.settings?.aiModel || DEFAULT_MODEL;
       const isStreaming = state.settings?.aiStreaming !== false;
+      const chatHistory = normalizeHistory(history);
 
-      let aiText = '';
-
-      const processStream = async (response) => {
-        dispatch({ type: 'ADD_MSG_TO_SESSION', payload: { sessionId: activeChatId, msg: { role: 'assistant', content: '', timestamp: new Date().toISOString() } } });
-        const reader = response.body.getReader();
-        const decoder = new TextDecoder();
-        
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          
-          const chunk = decoder.decode(value, { stream: true });
-          const lines = chunk.split('\n');
-          for (const line of lines) {
-            if (line.startsWith('data: ') && line.trim() !== 'data: [DONE]') {
-              try {
-                const data = JSON.parse(line.slice(6));
-                if (data.text) {
-                  aiText += data.text;
-                  dispatch({ type: 'APPEND_MSG_TO_SESSION', payload: { sessionId: activeChatId, chunk: data.text, actions: parseActions(aiText) } });
-                }
-              } catch (e) {
-                // Игнорируем ошибки парсинга неполных чанков JSON
-              }
-            }
+      // Один и тот же вызов модели, что и в тестовом запросе настроек.
+      let streamStarted = false;
+      const { text } = await callModel({
+        modelId: selectedModel,
+        prompt: msgText,
+        history: chatHistory,
+        settings: state.settings,
+        stream: isStreaming,
+        onChunk: (delta, full) => {
+          if (!streamStarted) {
+            dispatch({ type: 'ADD_MSG_TO_SESSION', payload: { sessionId: activeChatId, msg: { role: 'assistant', content: '', timestamp: new Date().toISOString() } } });
+            streamStarted = true;
           }
-        }
-      };
+          dispatch({ type: 'APPEND_MSG_TO_SESSION', payload: { sessionId: activeChatId, chunk: delta, actions: parseActions(full) } });
+        },
+      });
 
-      if (selectedModel === 'vertex/qwen3.6-27b') {
-        const response = await fetch('/api/vertex-ai/chat', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            prompt: msgText,
-            system: state.settings?.aiSystemPrompt || 'Вы — полезный, вежливый и честный помощник.',
-            temperature: state.settings?.aiTemperature ?? 0.7,
-            max_tokens: state.settings?.aiMaxTokens || 256,
-            stream: isStreaming
-          }),
-        });
-
-        if (!response.ok) {
-          const data = await response.json().catch(() => ({}));
-          throw new Error(`Ошибка Vertex AI: ${data?.message || data?.error || 'Неизвестная ошибка'}`);
-        }
-
-        if (isStreaming) {
-          await processStream(response);
-        } else {
-          const data = await response.json();
-          aiText = data.text || 'Пустой ответ от модели.';
-          dispatch({ type: 'ADD_MSG_TO_SESSION', payload: { sessionId: activeChatId, msg: { role: 'assistant', content: aiText, timestamp: new Date().toISOString(), actions: parseActions(aiText) } } });
-        }
-
-      } else if (useGitHubModels) {
-        const response = await fetch('/api/github-models/chat', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            prompt: msgText,
-            system: state.settings?.aiSystemPrompt || 'Вы — полезный, вежливый и честный помощник.',
-            model: selectedModel,
-            temperature: state.settings?.aiTemperature ?? 0.7,
-            stream: isStreaming
-          }),
-        });
-
-        if (!response.ok) {
-          const data = await response.json().catch(() => ({}));
-          throw new Error(`Ошибка GitHub Models: ${data?.message || data?.error || 'Неизвестная ошибка'}`);
-        }
-
-        if (isStreaming) {
-          await processStream(response);
-        } else {
-          const data = await response.json();
-          aiText = data.text || 'Пустой ответ от модели.';
-          dispatch({ type: 'ADD_MSG_TO_SESSION', payload: { sessionId: activeChatId, msg: { role: 'assistant', content: aiText, timestamp: new Date().toISOString(), actions: parseActions(aiText) } } });
-        }
-
-      } else {
-        const response = await fetch('/api/omni', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ text: msgText }),
-        });
-        const data = await response.json();
-
-        if (response.ok) {
-          aiText = data.responses?.[0]?.text || data.reply?.[0]?.text || JSON.stringify(data);
-          dispatch({ type: 'ADD_MSG_TO_SESSION', payload: { sessionId: activeChatId, msg: { role: 'assistant', content: aiText, timestamp: new Date().toISOString(), actions: parseActions(aiText) } } });
-        } else if (data.error) {
-          throw new Error(`Ошибка ядра: ${data.error.message || JSON.stringify(data.error)}`);
-        }
+      // Не-стриминговый ответ (или стрим без чанков) добавляем одним сообщением.
+      if (!streamStarted) {
+        dispatch({ type: 'ADD_MSG_TO_SESSION', payload: { sessionId: activeChatId, msg: { role: 'assistant', content: text, timestamp: new Date().toISOString(), actions: parseActions(text) } } });
       }
     } catch (err) {
       dispatch({ type: 'ADD_MSG_TO_SESSION', payload: { sessionId: activeChatId, msg: { role: 'system', content: err.message || 'Ошибка связи с сервером. Проверьте соединение.', timestamp: new Date().toISOString() } } });
@@ -485,11 +744,14 @@ const OmniView = ({ state, dispatch }) => {
       {/* Область чата */}
       <div className="flex-1 flex flex-col min-w-0">
         <div className="bg-theme-panel border-b border-theme-border p-3 flex items-center justify-between shrink-0 shadow-sm">
-          <h3 className="text-sm font-serif font-bold text-theme-text flex items-center gap-2 truncate">
+          <h3 className="text-sm font-serif font-bold text-theme-text flex items-center gap-2 truncate min-w-0">
             <Bot className="text-theme-accent shrink-0" size={16} />
             <span className="truncate">{activeChat?.name || 'Личный ассистент'}</span>
           </h3>
-          <span className="text-xs font-mono text-theme-accent bg-theme-bg px-2 py-1 rounded border border-theme-border shrink-0 ml-2">MIND_LINK</span>
+          <ModelSwitcher
+            selectedModel={state.settings?.aiModel || DEFAULT_MODEL}
+            onSelect={(modelId) => dispatch({ type: 'UPDATE_SETTINGS', payload: { aiModel: modelId } })}
+          />
         </div>
 
         <div ref={chatContainerRef} className="flex-1 bg-theme-bg overflow-y-auto p-5 space-y-5 custom-scrollbar">
@@ -528,9 +790,25 @@ const OmniView = ({ state, dispatch }) => {
                     </div>
                   )}
                 </div>
-                <span className="text-[10px] text-theme-muted mt-1 px-1">
-                  {new Date(msg.timestamp).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}
-                </span>
+                <div className="flex items-center gap-2 mt-1 px-1">
+                  <span className="text-[10px] text-theme-muted">
+                    {new Date(msg.timestamp).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}
+                  </span>
+                  <button 
+                    onClick={() => setExpandedDetails(prev => ({ ...prev, [idx]: !prev[idx] }))}
+                    className="text-theme-muted hover:text-theme-accent transition-colors"
+                    title="Просмотр структур и взаимодействия"
+                  >
+                    <Database size={11} />
+                  </button>
+                </div>
+                {expandedDetails[idx] && (
+                  <div className={`mt-2 p-3 rounded-lg text-[10px] font-mono overflow-x-auto max-w-[80%] border ${
+                    msg.role === 'user' ? 'bg-theme-bg/20 border-theme-bg/20 text-theme-text' : 'bg-theme-bg border-theme-border text-theme-muted'
+                  }`}>
+                    <pre>{JSON.stringify(msg, null, 2)}</pre>
+                  </div>
+                )}
               </div>
             ))
           )}
@@ -1096,8 +1374,10 @@ const GoogleDrivePanel = ({ storageLocation, googleProfile, vaultName, onListDri
 };
 
 // ==== SETTINGS VIEW ====
-const SettingsView = ({ state, dispatch, onExportVault, onLock, vaultName, storageLocation, googleProfile, onListDriveFiles, onSwitchDriveFile, onDisconnectGoogle }) => {
+const SettingsView = ({ state, dispatch, onExportVault, onSaveNow, onImportVault, onLock, vaultName, storageLocation, googleProfile, onListDriveFiles, onSwitchDriveFile, onDisconnectGoogle }) => {
   const [settingsTab, setSettingsTab] = useState('system');
+  const [importVaultError, setImportVaultError] = useState('');
+  const [importVaultSuccess, setImportVaultSuccess] = useState(false);
 
   const handleExportJSON = () => {
     const dataStr = JSON.stringify(state, null, 2);
@@ -1311,6 +1591,16 @@ const SettingsView = ({ state, dispatch, onExportVault, onLock, vaultName, stora
                   />
                 </div>
                 <div className="space-y-1.5">
+                  <label className="text-xs font-bold text-theme-muted uppercase tracking-wider">Hugging Face API Key</label>
+                  <input 
+                    type="password" 
+                    placeholder="hf_..."
+                    value={state.settings?.apiKeys?.huggingface || ''}
+                    onChange={(e) => dispatch({ type: 'UPDATE_SETTINGS', payload: { apiKeys: { ...state.settings?.apiKeys, huggingface: e.target.value } } })}
+                    className="w-full bg-theme-bg border border-theme-border rounded-xl px-4 py-2.5 text-sm text-theme-text outline-none focus:border-theme-accent transition-all"
+                  />
+                </div>
+                <div className="space-y-1.5">
                   <label className="text-xs font-bold text-theme-muted uppercase tracking-wider">Google Gemini API Key</label>
                   <input 
                     type="password" 
@@ -1342,24 +1632,11 @@ const SettingsView = ({ state, dispatch, onExportVault, onLock, vaultName, stora
         </h3>
 
         <div className="space-y-6">
-          <div className="flex items-center justify-between">
-            <div>
-              <p className="text-theme-text font-medium">Модель ИИ</p>
-              <p className="text-sm text-theme-muted mt-1">Выберите модель для работы с запросами</p>
-            </div>
-            <select
-              value={state.settings?.aiModel || 'openai/gpt-5-chat'}
-              onChange={(e) => dispatch({ type: 'UPDATE_SETTINGS', payload: { aiModel: e.target.value } })}
-              className="bg-theme-panel border border-theme-border rounded-xl px-4 py-2.5 text-theme-text outline-none focus:border-theme-accent transition-all cursor-pointer shadow-sm"
-            >
-              <option value="openai/gpt-5-chat">GPT-5 Chat (GitHub Models)</option>
-              <option value="openai/gpt-5-mini">GPT-5 Mini (GitHub Models)</option>
-              <option value="vertex/qwen3.6-27b">Qwen3.6-27B (Vertex AI)</option>
-              <option value="claude-opus-4-8">Claude Opus 4.8 (через OMNI)</option>
-              <option value="claude-sonnet-4-6">Claude Sonnet 4.6 (через OMNI)</option>
-              <option value="claude-haiku-4-5">Claude Haiku 4.5 (через OMNI)</option>
-            </select>
-          </div>
+          <ModelScanner
+            selectedModel={state.settings?.aiModel || DEFAULT_MODEL}
+            onSelect={(modelId) => dispatch({ type: 'UPDATE_SETTINGS', payload: { aiModel: modelId } })}
+            settings={state.settings}
+          />
 
           <div className="flex items-center justify-between">
             <div>
@@ -1470,7 +1747,7 @@ const SettingsView = ({ state, dispatch, onExportVault, onLock, vaultName, stora
         onDisconnectGoogle={onDisconnectGoogle}
       />
 
-      <div className="glass-panel p-6 sm:p-8">
+        <div className="glass-panel p-6 sm:p-8">
       <section>
         <h3 className="text-2xl font-serif font-bold text-theme-text mb-8 flex items-center gap-4">
           <Share2 className="text-theme-accent" size={28} />
@@ -1483,6 +1760,9 @@ const SettingsView = ({ state, dispatch, onExportVault, onLock, vaultName, stora
               Ваша база данных хранится локально в зашифрованном виде. Регулярно создавайте резервные копии для предотвращения потери данных.
             </p>
             <div className="flex flex-col gap-4">
+              <button onClick={onSaveNow} className="btn-gold flex items-center justify-center gap-3">
+                <Save size={20} /> Сохранить сейчас (Ctrl+S)
+              </button>
               <button onClick={onExportVault} className="btn-primary flex items-center justify-center gap-3">
                 <Lock size={20} /> Экспорт .vault (Зашифровано)
               </button>
@@ -1497,6 +1777,27 @@ const SettingsView = ({ state, dispatch, onExportVault, onLock, vaultName, stora
               <Database size={18} className="text-theme-accent" /> Перенос данных
             </h4>
             <div className="grid grid-cols-1 gap-3">
+              {/* Import .vault */}
+              <label className="input-field text-sm py-3 flex items-center justify-center gap-3 cursor-pointer hover:bg-theme-accent/5 hover:border-theme-accent/40 transition-all">
+                <Upload size={18} className="text-theme-accent" /> Импорт .vault (Зашифровано)
+                <input type="file" className="hidden" accept=".vault" onChange={async (e) => {
+                  const file = e.target.files?.[0];
+                  if (!file) return;
+                  setImportVaultError('');
+                  setImportVaultSuccess(false);
+                  const result = await onImportVault(file);
+                  if (result?.ok) setImportVaultSuccess(true);
+                  else setImportVaultError(result?.error || 'Неверный пароль или повреждённый файл');
+                  e.target.value = '';
+                }} />
+              </label>
+              {importVaultSuccess && (
+                <p className="text-green-500 text-xs flex items-center gap-1"><CheckCircle size={12} /> Vault успешно импортирован!</p>
+              )}
+              {importVaultError && (
+                <p className="text-red-500 text-xs flex items-center gap-1"><XCircle size={12} /> {importVaultError}</p>
+              )}
+
               <button onClick={handleExportJSON} className="input-field text-sm py-3 flex items-center justify-center gap-3">
                 <Download size={18} /> Экспорт JSON (Открытый текст)
               </button>
@@ -1537,7 +1838,7 @@ const SettingsView = ({ state, dispatch, onExportVault, onLock, vaultName, stora
 };
 
 
-const VaultDashboard = ({ state, dispatch, onLock, onExportVault, vaultName, storageLocation, googleProfile, onListDriveFiles, onSwitchDriveFile, onDisconnectGoogle }) => {
+const VaultDashboard = ({ state, dispatch, onLock, onExportVault, onSaveNow, onImportVault, saveStatus, vaultName, storageLocation, googleProfile, onListDriveFiles, onSwitchDriveFile, onDisconnectGoogle }) => {
   const [activeTab, setActiveTab] = useState('base');
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
@@ -1587,6 +1888,7 @@ const VaultDashboard = ({ state, dispatch, onLock, onExportVault, vaultName, sto
               { id: 'base', icon: KeyRound, label: 'База знаний' },
               { id: 'projects', icon: GitBranch, label: 'Проекты' },
               { id: 'mindmap', icon: Network, label: 'Mindmaps' },
+              { id: 'workflow', icon: Workflow, label: 'Workflows' },
               { id: 'omni', icon: Bot, label: 'OMNI AI' },
               { id: 'gallery', icon: ImageIcon, label: 'Галерея' },
             ].map(tab => (
@@ -1639,6 +1941,7 @@ const VaultDashboard = ({ state, dispatch, onLock, onExportVault, vaultName, sto
               {activeTab === 'base' && <><KeyRound className="text-theme-accent" size={16} /> База Знаний</>}
               {activeTab === 'projects' && <><GitBranch className="text-theme-accent" size={16} /> Проекты</>}
               {activeTab === 'mindmap' && <><Network className="text-theme-accent" size={16} /> Mindmaps</>}
+              {activeTab === 'workflow' && <><Workflow className="text-theme-accent" size={16} /> Workflows</>}
               {activeTab === 'omni' && <><Bot className="text-theme-accent" size={16} /> Личный ассистент</>}
               {activeTab === 'gallery' && <><ImageIcon className="text-theme-accent" size={16} /> Галерея</>}
               {activeTab === 'settings' && <><Settings className="text-theme-accent" size={16} /> Настройки</>}
@@ -1646,7 +1949,20 @@ const VaultDashboard = ({ state, dispatch, onLock, onExportVault, vaultName, sto
           </div>
           
           <div className="flex items-center gap-3 text-[10px] font-mono text-theme-muted tracking-tighter">
-             <span className="flex items-center gap-1.5"><span className="w-1.5 h-1.5 rounded-full bg-theme-accent animate-pulse"></span> READY</span>
+            {vaultName && (
+              <span className="hidden sm:flex items-center gap-1 text-theme-muted/60 max-w-[160px] truncate" title={vaultName}>
+                <Database size={10} /> {vaultName}
+              </span>
+            )}
+            <SaveStatusBadge status={saveStatus} onSaveNow={onSaveNow} />
+            <button
+              onClick={onSaveNow}
+              title="Сохранить сейчас (Ctrl+S)"
+              className="flex items-center gap-1 px-2 py-1 rounded border border-theme-border bg-theme-panel hover:bg-theme-accent/10 hover:border-theme-accent/40 text-theme-muted hover:text-theme-accent transition-all"
+            >
+              <Save size={12} />
+              <span className="hidden sm:inline text-[10px]">Сохранить</span>
+            </button>
           </div>
         </header>
 
@@ -1661,6 +1977,11 @@ const VaultDashboard = ({ state, dispatch, onLock, onExportVault, vaultName, sto
             {activeTab === 'mindmap' && (
               <motion.div key="mindmap" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }} transition={{ duration: 0.2 }} className="h-full">
                 <MindmapView state={state} dispatch={dispatch} />
+              </motion.div>
+            )}
+            {activeTab === 'workflow' && (
+              <motion.div key="workflow" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }} transition={{ duration: 0.2 }} className="h-full">
+                <WorkflowView state={state} dispatch={dispatch} />
               </motion.div>
             )}
             {activeTab === 'projects' && (
@@ -1680,7 +2001,7 @@ const VaultDashboard = ({ state, dispatch, onLock, onExportVault, vaultName, sto
             )}
             {activeTab === 'settings' && (
               <motion.div key="settings" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }} transition={{ duration: 0.2 }} className="h-full">
-                <SettingsView state={state} dispatch={dispatch} onExportVault={onExportVault} onLock={onLock} vaultName={vaultName} storageLocation={storageLocation} googleProfile={googleProfile} onListDriveFiles={onListDriveFiles} onSwitchDriveFile={onSwitchDriveFile} onDisconnectGoogle={onDisconnectGoogle} />
+                <SettingsView state={state} dispatch={dispatch} onExportVault={onExportVault} onSaveNow={onSaveNow} onImportVault={onImportVault} onLock={onLock} vaultName={vaultName} storageLocation={storageLocation} googleProfile={googleProfile} onListDriveFiles={onListDriveFiles} onSwitchDriveFile={onSwitchDriveFile} onDisconnectGoogle={onDisconnectGoogle} />
               </motion.div>
             )}
           </AnimatePresence>
