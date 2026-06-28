@@ -1017,9 +1017,95 @@ app.post('/api/auth/:provider/disconnect', (req, res) => {
   res.json({ ok: true });
 });
 
+app.post('/api/vertex-ai/chat', async (req, res) => {
+  try {
+    const { prompt, system, temperature, max_tokens, stream } = req.body || {};
+
+    if (!prompt || typeof prompt !== 'string') {
+      return res.status(400).json({ error: 'Требуется текстовый prompt' });
+    }
+
+    const ENDPOINT_ID = 'mg-endpoint-6305fba2-7460-4baa-bb69-45d791b965c2';
+    const PROJECT_ID = 'cerber-495808';
+    const REGION = 'europe-west4';
+    const dedicatedDns = 'mg-endpoint-6305fba2-7460-4baa-bb69-45d791b965c2.europe-west4-334404516833.prediction.vertexai.goog';
+    
+    // Используем streamRawPredict, если запрошен стриминг
+    const method = stream ? 'streamRawPredict' : 'rawPredict';
+    const url = `https://${dedicatedDns}/v1beta1/projects/${PROJECT_ID}/locations/${REGION}/endpoints/${ENDPOINT_ID}:${method}`;
+
+    const client = await auth.getClient();
+    const tokenResponse = await client.getAccessToken();
+    const token = tokenResponse.token;
+
+    const requestBody = {
+      instances: [
+        {
+          prompt: `${system ? system + '\\n\\n' : ''}${prompt}`,
+          max_tokens: max_tokens || 256,
+          temperature: temperature || 0.7,
+          stream: !!stream
+        }
+      ]
+    };
+
+    const response = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${token}`,
+        "Content-Type": "application/json",
+        "Accept": stream ? "text/event-stream" : "application/json"
+      },
+      body: JSON.stringify(requestBody)
+    });
+
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      console.error("Ошибка API Vertex AI:", data);
+      return res.status(response.status).json({ error: 'Ошибка API Vertex AI', details: data });
+    }
+
+    if (stream) {
+      res.setHeader('Content-Type', 'text/event-stream');
+      res.setHeader('Cache-Control', 'no-cache');
+      res.setHeader('Connection', 'keep-alive');
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        
+        const chunkStr = decoder.decode(value, { stream: true });
+        // Прямая пересылка SSE данных от vLLM (если они приходят в SSE формате)
+        res.write(chunkStr);
+      }
+      res.write('data: [DONE]\n\n');
+      return res.end();
+    }
+
+    const data = await response.json();
+    let text = 'Ответ пуст';
+    if (data.predictions && data.predictions.length > 0) {
+      text = data.predictions[0];
+      const outputMarker = 'Output:\n';
+      if (text.includes(outputMarker)) {
+        text = text.split(outputMarker)[1].trim();
+      }
+    }
+
+    res.json({ text, ok: true });
+
+  } catch (error) {
+    console.error("Ошибка прокси-сервера Vertex AI:", error);
+    res.status(500).json({ error: 'Внутренняя ошибка сервера', message: error.message });
+  }
+});
+
 app.post('/api/github-models/chat', async (req, res) => {
   try {
-    const { prompt, system, model, temperature, top_p } = req.body || {};
+    const { prompt, system, model, temperature, top_p, stream } = req.body || {};
 
     if (!githubModelsClient) {
       return res.status(500).json({
@@ -1054,7 +1140,22 @@ app.post('/api/github-models/chat', async (req, res) => {
       messages,
       temperature: safeTemperature,
       top_p: safeTopP,
+      stream: !!stream
     });
+
+    if (stream) {
+      res.setHeader('Content-Type', 'text/event-stream');
+      res.setHeader('Cache-Control', 'no-cache');
+      res.setHeader('Connection', 'keep-alive');
+
+      for await (const chunk of response) {
+        if (chunk.choices[0]?.delta?.content) {
+          res.write(`data: ${JSON.stringify({ text: chunk.choices[0].delta.content })}\n\n`);
+        }
+      }
+      res.write('data: [DONE]\n\n');
+      return res.end();
+    }
 
     const choice = response.choices?.[0];
     const text = choice?.message?.content ?? '';

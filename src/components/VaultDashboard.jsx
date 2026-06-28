@@ -243,7 +243,7 @@ const OmniView = ({ state, dispatch }) => {
   const [loading, setLoading] = React.useState(false);
   const [editingName, setEditingName] = React.useState(null);
   const [editNameValue, setEditNameValue] = React.useState('');
-  const messagesEndRef = React.useRef(null);
+  const chatContainerRef = React.useRef(null);
 
   const activeChat = sessions.find(s => s.id === activeChatId);
   const history = activeChat?.messages || [];
@@ -259,7 +259,9 @@ const OmniView = ({ state, dispatch }) => {
   }, [state.chatSessions, activeChatId]);
 
   React.useEffect(() => {
-    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    if (chatContainerRef.current) {
+      chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
+    }
   }, [history.length, loading]);
 
   const handleNewChat = () => {
@@ -314,10 +316,64 @@ const OmniView = ({ state, dispatch }) => {
     try {
       const selectedModel = state.settings?.aiModel || 'openai/gpt-5-chat';
       const useGitHubModels = selectedModel.includes('/');
+      const isStreaming = state.settings?.aiStreaming !== false;
 
-      let aiText = 'Извините, ассистент не ответил.';
+      let aiText = '';
 
-      if (useGitHubModels) {
+      const processStream = async (response) => {
+        dispatch({ type: 'ADD_MSG_TO_SESSION', payload: { sessionId: activeChatId, msg: { role: 'assistant', content: '', timestamp: new Date().toISOString() } } });
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          
+          const chunk = decoder.decode(value, { stream: true });
+          const lines = chunk.split('\n');
+          for (const line of lines) {
+            if (line.startsWith('data: ') && line.trim() !== 'data: [DONE]') {
+              try {
+                const data = JSON.parse(line.slice(6));
+                if (data.text) {
+                  aiText += data.text;
+                  dispatch({ type: 'APPEND_MSG_TO_SESSION', payload: { sessionId: activeChatId, chunk: data.text, actions: parseActions(aiText) } });
+                }
+              } catch (e) {
+                // Игнорируем ошибки парсинга неполных чанков JSON
+              }
+            }
+          }
+        }
+      };
+
+      if (selectedModel === 'vertex/qwen3.6-27b') {
+        const response = await fetch('/api/vertex-ai/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            prompt: msgText,
+            system: state.settings?.aiSystemPrompt || 'Вы — полезный, вежливый и честный помощник.',
+            temperature: state.settings?.aiTemperature ?? 0.7,
+            max_tokens: state.settings?.aiMaxTokens || 256,
+            stream: isStreaming
+          }),
+        });
+
+        if (!response.ok) {
+          const data = await response.json().catch(() => ({}));
+          throw new Error(`Ошибка Vertex AI: ${data?.message || data?.error || 'Неизвестная ошибка'}`);
+        }
+
+        if (isStreaming) {
+          await processStream(response);
+        } else {
+          const data = await response.json();
+          aiText = data.text || 'Пустой ответ от модели.';
+          dispatch({ type: 'ADD_MSG_TO_SESSION', payload: { sessionId: activeChatId, msg: { role: 'assistant', content: aiText, timestamp: new Date().toISOString(), actions: parseActions(aiText) } } });
+        }
+
+      } else if (useGitHubModels) {
         const response = await fetch('/api/github-models/chat', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -326,16 +382,23 @@ const OmniView = ({ state, dispatch }) => {
             system: state.settings?.aiSystemPrompt || 'Вы — полезный, вежливый и честный помощник.',
             model: selectedModel,
             temperature: state.settings?.aiTemperature ?? 0.7,
+            stream: isStreaming
           }),
         });
 
-        const data = await response.json();
-
-        if (response.ok) {
-          aiText = data.text || 'Пустой ответ от модели.';
-        } else {
-          aiText = `Ошибка GitHub Models: ${data?.message || data?.error || 'Неизвестная ошибка'}`;
+        if (!response.ok) {
+          const data = await response.json().catch(() => ({}));
+          throw new Error(`Ошибка GitHub Models: ${data?.message || data?.error || 'Неизвестная ошибка'}`);
         }
+
+        if (isStreaming) {
+          await processStream(response);
+        } else {
+          const data = await response.json();
+          aiText = data.text || 'Пустой ответ от модели.';
+          dispatch({ type: 'ADD_MSG_TO_SESSION', payload: { sessionId: activeChatId, msg: { role: 'assistant', content: aiText, timestamp: new Date().toISOString(), actions: parseActions(aiText) } } });
+        }
+
       } else {
         const response = await fetch('/api/omni', {
           method: 'POST',
@@ -346,14 +409,13 @@ const OmniView = ({ state, dispatch }) => {
 
         if (response.ok) {
           aiText = data.responses?.[0]?.text || data.reply?.[0]?.text || JSON.stringify(data);
+          dispatch({ type: 'ADD_MSG_TO_SESSION', payload: { sessionId: activeChatId, msg: { role: 'assistant', content: aiText, timestamp: new Date().toISOString(), actions: parseActions(aiText) } } });
         } else if (data.error) {
-          aiText = `Ошибка ядра: ${data.error.message || JSON.stringify(data.error)}`;
+          throw new Error(`Ошибка ядра: ${data.error.message || JSON.stringify(data.error)}`);
         }
       }
-
-      dispatch({ type: 'ADD_MSG_TO_SESSION', payload: { sessionId: activeChatId, msg: { role: 'assistant', content: aiText, timestamp: new Date().toISOString(), actions: parseActions(aiText) } } });
-    } catch {
-      dispatch({ type: 'ADD_MSG_TO_SESSION', payload: { sessionId: activeChatId, msg: { role: 'system', content: 'Ошибка связи с ядром OMNI. Проверьте соединение.', timestamp: new Date().toISOString() } } });
+    } catch (err) {
+      dispatch({ type: 'ADD_MSG_TO_SESSION', payload: { sessionId: activeChatId, msg: { role: 'system', content: err.message || 'Ошибка связи с сервером. Проверьте соединение.', timestamp: new Date().toISOString() } } });
     } finally {
       setLoading(false);
     }
@@ -430,7 +492,7 @@ const OmniView = ({ state, dispatch }) => {
           <span className="text-xs font-mono text-theme-accent bg-theme-bg px-2 py-1 rounded border border-theme-border shrink-0 ml-2">MIND_LINK</span>
         </div>
 
-        <div className="flex-1 bg-theme-bg overflow-y-auto p-5 space-y-5 custom-scrollbar">
+        <div ref={chatContainerRef} className="flex-1 bg-theme-bg overflow-y-auto p-5 space-y-5 custom-scrollbar">
           {history.length === 0 ? (
             <div className="h-full flex flex-col items-center justify-center opacity-40 text-center pointer-events-none">
               <Bot size={56} className="text-theme-accent mb-4" />
@@ -479,7 +541,6 @@ const OmniView = ({ state, dispatch }) => {
               </div>
             </div>
           )}
-          <div ref={messagesEndRef} />
         </div>
 
         <div className="bg-theme-panel border-t border-theme-border p-3 flex gap-3 shrink-0 shadow-sm">
@@ -1036,6 +1097,8 @@ const GoogleDrivePanel = ({ storageLocation, googleProfile, vaultName, onListDri
 
 // ==== SETTINGS VIEW ====
 const SettingsView = ({ state, dispatch, onExportVault, onLock, vaultName, storageLocation, googleProfile, onListDriveFiles, onSwitchDriveFile, onDisconnectGoogle }) => {
+  const [settingsTab, setSettingsTab] = useState('system');
+
   const handleExportJSON = () => {
     const dataStr = JSON.stringify(state, null, 2);
     const blob = new Blob([dataStr], { type: 'application/json' });
@@ -1047,15 +1110,37 @@ const SettingsView = ({ state, dispatch, onExportVault, onLock, vaultName, stora
     URL.revokeObjectURL(url);
   };
 
-
   return (
-    <div className="max-w-2xl space-y-8 animate-in fade-in duration-500">
-      <div className="glass-panel p-6 sm:p-8">
-        <h3 className="text-xl font-serif font-bold text-theme-text mb-6 flex items-center gap-2 border-b border-theme-border pb-4">
-          <Settings className="text-theme-accent" /> Настройки системы
-        </h3>
-        
-        <div className="space-y-6">
+    <div className="max-w-4xl space-y-6 animate-in fade-in duration-500">
+      {/* Settings Navigation */}
+      <div className="flex flex-wrap gap-3 border-b border-theme-border pb-4 mb-4">
+        <button 
+          onClick={() => setSettingsTab('system')}
+          className={`px-4 py-2.5 rounded-xl text-sm font-bold transition-all shadow-sm flex items-center gap-2 ${settingsTab === 'system' ? 'bg-theme-accent text-theme-bg' : 'bg-theme-panel text-theme-muted hover:text-theme-text border border-theme-border hover:border-theme-accent/50'}`}
+        >
+          <Settings size={16} /> Система
+        </button>
+        <button 
+          onClick={() => setSettingsTab('ai')}
+          className={`px-4 py-2.5 rounded-xl text-sm font-bold transition-all shadow-sm flex items-center gap-2 ${settingsTab === 'ai' ? 'bg-theme-accent text-theme-bg' : 'bg-theme-panel text-theme-muted hover:text-theme-text border border-theme-border hover:border-theme-accent/50'}`}
+        >
+          <Bot size={16} /> ИИ и Интеграции
+        </button>
+        <button 
+          onClick={() => setSettingsTab('data')}
+          className={`px-4 py-2.5 rounded-xl text-sm font-bold transition-all shadow-sm flex items-center gap-2 ${settingsTab === 'data' ? 'bg-theme-accent text-theme-bg' : 'bg-theme-panel text-theme-muted hover:text-theme-text border border-theme-border hover:border-theme-accent/50'}`}
+        >
+          <Database size={16} /> Данные и Хранилище
+        </button>
+      </div>
+
+      {settingsTab === 'system' && (
+        <div className="glass-panel p-6 sm:p-8 animate-in fade-in duration-300">
+          <h3 className="text-xl font-serif font-bold text-theme-text mb-6 flex items-center gap-2 border-b border-theme-border pb-4">
+            <Settings className="text-theme-accent" /> Настройки системы
+          </h3>
+          
+          <div className="space-y-6">
           <div className="flex items-center justify-between">
             <div>
               <p className="text-theme-text font-medium">Автоблокировка хранилища</p>
@@ -1085,10 +1170,44 @@ const SettingsView = ({ state, dispatch, onExportVault, onLock, vaultName, stora
               <option value="cyberpunk">OMNI Classic (Киберпанк)</option>
             </select>
           </div>
-        </div>
-      </div>
 
-      <div className="glass-panel p-6 sm:p-8">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-theme-text font-medium">Язык интерфейса (Language)</p>
+              <p className="text-sm text-theme-muted mt-1">Локализация системы</p>
+            </div>
+            <select 
+              value={state.settings?.language || 'ru'}
+              onChange={(e) => dispatch({ type: 'UPDATE_SETTINGS', payload: { language: e.target.value } })}
+              className="bg-theme-panel border border-theme-border rounded-xl px-4 py-2.5 text-theme-text outline-none focus:border-theme-accent transition-all cursor-pointer shadow-sm"
+            >
+              <option value="ru">Русский (Russian)</option>
+              <option value="en">English (Английский)</option>
+            </select>
+          </div>
+
+          <div className="flex items-center justify-between pt-4 border-t border-theme-border">
+            <div>
+              <p className="text-theme-text font-medium">Анимации интерфейса</p>
+              <p className="text-sm text-theme-muted mt-1">Отключите для слабых устройств</p>
+            </div>
+            <label className="relative inline-flex items-center cursor-pointer">
+              <input 
+                type="checkbox" 
+                className="sr-only peer"
+                checked={state.settings?.animations !== false}
+                onChange={(e) => dispatch({ type: 'UPDATE_SETTINGS', payload: { animations: e.target.checked } })}
+              />
+              <div className="w-11 h-6 bg-theme-panel border border-theme-border peer-focus:outline-none peer-focus:ring-2 peer-focus:ring-theme-accent rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-theme-text after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-theme-accent"></div>
+            </label>
+          </div>
+        </div>
+        </div>
+      )}
+
+      {settingsTab === 'ai' && (
+        <div className="space-y-8 animate-in fade-in duration-300">
+          <div className="glass-panel p-6 sm:p-8">
         <h3 className="text-xl font-serif font-bold text-theme-text mb-6 flex items-center gap-2 border-b border-theme-border pb-4">
           <Bot className="text-theme-accent" /> Интеграция ИИ и API (Agent Platform)
         </h3>
@@ -1125,48 +1244,95 @@ const SettingsView = ({ state, dispatch, onExportVault, onLock, vaultName, stora
                 <CheckCircle size={20} className={`h-5 w-5 text-theme-accent ${state.settings?.apiAuthMethod === 'adc' || !state.settings?.apiAuthMethod ? 'block' : 'hidden'}`} />
               </label>
 
-              <label className={`relative flex cursor-pointer rounded-lg border bg-theme-panel/50 p-4 shadow-sm focus:outline-none opacity-60 ${state.settings?.apiAuthMethod === 'api_key' ? 'border-red-500 ring-1 ring-red-500' : 'border-theme-border'}`}>
+              <label className={`relative flex cursor-pointer rounded-lg border bg-theme-panel p-4 shadow-sm focus:outline-none transition-all ${state.settings?.apiAuthMethod === 'api_key' ? 'border-theme-accent ring-1 ring-theme-accent' : 'border-theme-border hover:border-theme-accent/50'}`}>
                 <input 
                   type="radio" 
                   name="apiAuthMethod" 
                   value="api_key" 
                   className="sr-only"
                   checked={state.settings?.apiAuthMethod === 'api_key'}
-                  onChange={() => {
-                    alert('Политика безопасности вашей организации запрещает использование API Keys. Пожалуйста, используйте Application Default Credentials (ADC).');
-                  }}
+                  onChange={() => dispatch({ type: 'UPDATE_SETTINGS', payload: { apiAuthMethod: 'api_key' } })}
                 />
                 <span className="flex flex-1">
                   <span className="flex flex-col">
                     <span className="block text-sm font-bold text-theme-text flex items-center gap-2">
-                      API Keys <span className="text-[10px] bg-red-100 text-red-700 px-2 py-0.5 rounded uppercase font-medium">Disallowed</span>
+                      Локальные API Ключи <span className="text-[10px] bg-theme-panel text-theme-muted px-2 py-0.5 border border-theme-border rounded uppercase font-medium">Encrypted</span>
                     </span>
                     <span className="mt-1 flex items-center text-sm text-theme-muted">
-                      Использование долгоживущих ключей отключено политикой безопасности.
+                      Ключи шифруются вашим мастер-паролем и хранятся только локально в .vault файле.
                     </span>
                   </span>
                 </span>
-                <XCircle size={20} className="h-5 w-5 text-red-500 block" />
+                <CheckCircle size={20} className={`h-5 w-5 text-theme-accent ${state.settings?.apiAuthMethod === 'api_key' ? 'block' : 'hidden'}`} />
               </label>
             </div>
           </div>
           
-          <div className="pt-4 border-t border-theme-border">
-            <p className="text-theme-text font-medium mb-3 text-sm">Настройка ADC (Bash Script)</p>
-            <div className="bg-theme-text rounded-lg p-3 relative group">
-              <code className="text-xs text-theme-bg font-mono break-all select-all">
-                bash &lt;(curl -sSL https://storage.googleapis.com/cloud-samples-data/adc/setup_adc.sh)
-              </code>
-              <button 
-                onClick={() => navigator.clipboard.writeText("bash <(curl -sSL https://storage.googleapis.com/cloud-samples-data/adc/setup_adc.sh)")}
-                className="absolute right-2 top-2 p-1.5 bg-theme-text rounded hover:bg-theme-text/90 text-theme-bg transition-colors"
-                title="Копировать скрипт"
-              >
-                📋
-              </button>
+          {state.settings?.apiAuthMethod === 'adc' || !state.settings?.apiAuthMethod ? (
+            <div className="pt-4 border-t border-theme-border animate-in fade-in duration-300">
+              <p className="text-theme-text font-medium mb-3 text-sm">Настройка ADC (Bash Script)</p>
+              <div className="bg-theme-text rounded-lg p-3 relative group">
+                <code className="text-xs text-theme-bg font-mono break-all select-all">
+                  bash &lt;(curl -sSL https://storage.googleapis.com/cloud-samples-data/adc/setup_adc.sh)
+                </code>
+                <button 
+                  onClick={() => navigator.clipboard.writeText("bash <(curl -sSL https://storage.googleapis.com/cloud-samples-data/adc/setup_adc.sh)")}
+                  className="absolute right-2 top-2 p-1.5 bg-theme-text rounded hover:bg-theme-text/90 text-theme-bg transition-colors"
+                  title="Копировать скрипт"
+                >
+                  📋
+                </button>
+              </div>
+              <p className="text-xs text-theme-muted mt-2">Выполните эту команду в терминале для настройки Application Default Credentials.</p>
             </div>
-            <p className="text-xs text-theme-muted mt-2">Выполните эту команду в терминале для настройки Application Default Credentials.</p>
-          </div>
+          ) : (
+            <div className="pt-4 border-t border-theme-border animate-in fade-in duration-300 space-y-4">
+              <p className="text-theme-text font-medium text-sm">Управление API ключами</p>
+              
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div className="space-y-1.5">
+                  <label className="text-xs font-bold text-theme-muted uppercase tracking-wider">OpenAI API Key</label>
+                  <input 
+                    type="password" 
+                    placeholder="sk-..."
+                    value={state.settings?.apiKeys?.openai || ''}
+                    onChange={(e) => dispatch({ type: 'UPDATE_SETTINGS', payload: { apiKeys: { ...state.settings?.apiKeys, openai: e.target.value } } })}
+                    className="w-full bg-theme-bg border border-theme-border rounded-xl px-4 py-2.5 text-sm text-theme-text outline-none focus:border-theme-accent transition-all"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-xs font-bold text-theme-muted uppercase tracking-wider">Anthropic API Key</label>
+                  <input 
+                    type="password" 
+                    placeholder="sk-ant-..."
+                    value={state.settings?.apiKeys?.anthropic || ''}
+                    onChange={(e) => dispatch({ type: 'UPDATE_SETTINGS', payload: { apiKeys: { ...state.settings?.apiKeys, anthropic: e.target.value } } })}
+                    className="w-full bg-theme-bg border border-theme-border rounded-xl px-4 py-2.5 text-sm text-theme-text outline-none focus:border-theme-accent transition-all"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-xs font-bold text-theme-muted uppercase tracking-wider">Google Gemini API Key</label>
+                  <input 
+                    type="password" 
+                    placeholder="AIzaSy..."
+                    value={state.settings?.apiKeys?.gemini || ''}
+                    onChange={(e) => dispatch({ type: 'UPDATE_SETTINGS', payload: { apiKeys: { ...state.settings?.apiKeys, gemini: e.target.value } } })}
+                    className="w-full bg-theme-bg border border-theme-border rounded-xl px-4 py-2.5 text-sm text-theme-text outline-none focus:border-theme-accent transition-all"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-xs font-bold text-theme-muted uppercase tracking-wider">Vertex AI API Key</label>
+                  <input 
+                    type="password" 
+                    placeholder="Ya29..."
+                    value={state.settings?.apiKeys?.vertex || ''}
+                    onChange={(e) => dispatch({ type: 'UPDATE_SETTINGS', payload: { apiKeys: { ...state.settings?.apiKeys, vertex: e.target.value } } })}
+                    className="w-full bg-theme-bg border border-theme-border rounded-xl px-4 py-2.5 text-sm text-theme-text outline-none focus:border-theme-accent transition-all"
+                  />
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       </div>
 
@@ -1188,6 +1354,7 @@ const SettingsView = ({ state, dispatch, onExportVault, onLock, vaultName, stora
             >
               <option value="openai/gpt-5-chat">GPT-5 Chat (GitHub Models)</option>
               <option value="openai/gpt-5-mini">GPT-5 Mini (GitHub Models)</option>
+              <option value="vertex/qwen3.6-27b">Qwen3.6-27B (Vertex AI)</option>
               <option value="claude-opus-4-8">Claude Opus 4.8 (через OMNI)</option>
               <option value="claude-sonnet-4-6">Claude Sonnet 4.6 (через OMNI)</option>
               <option value="claude-haiku-4-5">Claude Haiku 4.5 (через OMNI)</option>
@@ -1287,7 +1454,12 @@ const SettingsView = ({ state, dispatch, onExportVault, onLock, vaultName, stora
         </div>
       </div>
 
-      <IntegrationsPanel />
+        </div>
+      )}
+
+      {settingsTab === 'data' && (
+        <div className="space-y-8 animate-in fade-in duration-300">
+          <IntegrationsPanel />
 
       <GoogleDrivePanel
         storageLocation={storageLocation}
@@ -1358,6 +1530,8 @@ const SettingsView = ({ state, dispatch, onExportVault, onLock, vaultName, stora
           <span>ENCRYPTION: AES-GCM-256</span>
         </div>
       </section>
+        </div>
+      )}
     </div>
   );
 };

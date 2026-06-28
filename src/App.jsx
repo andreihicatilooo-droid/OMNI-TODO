@@ -58,6 +58,22 @@ const appReducer = (state, action) => {
           }
         ),
       };
+    case 'APPEND_MSG_TO_SESSION':
+      return {
+        ...state,
+        chatSessions: (state.chatSessions || []).map(s => {
+          if (s.id !== action.payload.sessionId) return s;
+          const messages = [...s.messages];
+          if (messages.length === 0) return s;
+          const lastMsg = { ...messages[messages.length - 1] };
+          lastMsg.content = lastMsg.content + action.payload.chunk;
+          if (action.payload.actions) {
+            lastMsg.actions = action.payload.actions;
+          }
+          messages[messages.length - 1] = lastMsg;
+          return { ...s, messages };
+        }),
+      };
     case 'RENAME_CHAT_SESSION':
       return { ...state, chatSessions: (state.chatSessions || []).map(s => s.id === action.payload.id ? { ...s, name: action.payload.name } : s) };
     case 'DELETE_PROJECT':
