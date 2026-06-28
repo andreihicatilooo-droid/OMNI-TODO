@@ -821,8 +821,115 @@ const IntegrationsPanel = () => {
   );
 };
 
+// ==== GOOGLE DRIVE PANEL (управление подключением) ====
+const GoogleDrivePanel = ({ storageLocation, googleProfile, vaultName, onListDriveFiles, onSwitchDriveFile, onDisconnectGoogle }) => {
+  const [files, setFiles] = useState(null);
+  const [loading, setLoading] = useState(false);
+
+  const loadFiles = async () => {
+    if (!onListDriveFiles) return;
+    setLoading(true);
+    try {
+      setFiles(await onListDriveFiles());
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Панель показывается только при активной сессии Google Drive.
+  if (storageLocation !== 'drive' || !googleProfile) return null;
+
+  return (
+    <div className="glass-panel p-6 sm:p-8">
+      <h3 className="text-xl font-serif font-bold text-theme-text mb-6 flex items-center gap-2 border-b border-theme-border pb-4">
+        <Database className="text-theme-accent" /> Google Drive
+      </h3>
+
+      {/* Текущий аккаунт */}
+      <div className="flex items-center justify-between gap-4 rounded-xl border border-theme-border bg-theme-panel/40 p-4 mb-4">
+        <div className="flex items-center gap-3 min-w-0">
+          {googleProfile.picture ? (
+            <img src={googleProfile.picture} alt="" className="h-10 w-10 rounded-full shrink-0" />
+          ) : (
+            <div className="h-10 w-10 rounded-full bg-theme-accent/20 flex items-center justify-center text-theme-accent font-bold shrink-0">
+              {(googleProfile.email || googleProfile.name || '?').charAt(0).toUpperCase()}
+            </div>
+          )}
+          <div className="min-w-0">
+            <p className="font-medium text-theme-text truncate">{googleProfile.name || 'Аккаунт Google'}</p>
+            <p className="text-sm text-theme-muted truncate">{googleProfile.email}</p>
+          </div>
+        </div>
+        <button
+          onClick={onDisconnectGoogle}
+          className="input-field text-sm px-4 py-2 shrink-0 hover:bg-theme-panel/10 transition-colors flex items-center gap-2"
+        >
+          <LogOut size={15} /> Отвязать
+        </button>
+      </div>
+
+      {/* Активный файл */}
+      <div className="flex items-center gap-2 text-sm text-theme-muted mb-4">
+        <CheckCircle size={15} className="text-green-500 shrink-0" />
+        Активный файл: <span className="text-theme-text font-medium truncate">{vaultName || '—'}</span>
+      </div>
+
+      {/* Список файлов / переключение */}
+      <div className="pt-4 border-t border-theme-border">
+        <div className="flex items-center justify-between mb-3">
+          <p className="text-theme-text font-medium text-sm">Файлы базы на Drive</p>
+          <button
+            onClick={loadFiles}
+            disabled={loading}
+            className="text-sm text-theme-accent hover:underline flex items-center gap-1.5 disabled:opacity-50"
+          >
+            {loading ? <Loader2 size={14} className="animate-spin" /> : <Search size={14} />}
+            {files === null ? 'Показать' : 'Обновить'}
+          </button>
+        </div>
+
+        {files !== null && (
+          files.length === 0 ? (
+            <p className="text-sm text-theme-muted">Файлы базы не найдены.</p>
+          ) : (
+            <div className="space-y-2">
+              {files.map((f) => {
+                const isActive = f.name === vaultName;
+                return (
+                  <div key={f.id} className="flex items-center justify-between gap-3 rounded-lg border border-theme-border bg-theme-panel/30 px-3 py-2.5">
+                    <div className="min-w-0">
+                      <p className="text-sm text-theme-text truncate flex items-center gap-2">
+                        {f.name}
+                        {isActive && <span className="text-[10px] bg-green-100 text-green-700 px-1.5 py-0.5 rounded uppercase font-medium">Активен</span>}
+                      </p>
+                      {f.modifiedTime && (
+                        <p className="text-xs text-theme-muted">Изменён: {new Date(f.modifiedTime).toLocaleString('ru-RU')}</p>
+                      )}
+                    </div>
+                    {!isActive && (
+                      <button
+                        onClick={() => onSwitchDriveFile(f)}
+                        className="btn-primary text-xs px-3 py-1.5 shrink-0"
+                      >
+                        Открыть
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )
+        )}
+        <p className="text-xs text-theme-muted mt-3">
+          При открытии другого файла потребуется ввести его мастер-пароль.
+        </p>
+      </div>
+    </div>
+  );
+};
+
 // ==== SETTINGS VIEW ====
-const SettingsView = ({ state, dispatch, onExportVault, onLock }) => {
+const SettingsView = ({ state, dispatch, onExportVault, onLock, vaultName, storageLocation, googleProfile, onListDriveFiles, onSwitchDriveFile, onDisconnectGoogle }) => {
   const handleExportJSON = () => {
     const dataStr = JSON.stringify(state, null, 2);
     const blob = new Blob([dataStr], { type: 'application/json' });
@@ -1075,6 +1182,15 @@ const SettingsView = ({ state, dispatch, onExportVault, onLock }) => {
 
       <IntegrationsPanel />
 
+      <GoogleDrivePanel
+        storageLocation={storageLocation}
+        googleProfile={googleProfile}
+        vaultName={vaultName}
+        onListDriveFiles={onListDriveFiles}
+        onSwitchDriveFile={onSwitchDriveFile}
+        onDisconnectGoogle={onDisconnectGoogle}
+      />
+
       <div className="glass-panel p-6 sm:p-8">
       <section>
         <h3 className="text-2xl font-serif font-bold text-theme-text mb-8 flex items-center gap-4">
@@ -1140,7 +1256,7 @@ const SettingsView = ({ state, dispatch, onExportVault, onLock }) => {
 };
 
 
-const VaultDashboard = ({ state, dispatch, onLock, onExportVault }) => {
+const VaultDashboard = ({ state, dispatch, onLock, onExportVault, vaultName, storageLocation, googleProfile, onListDriveFiles, onSwitchDriveFile, onDisconnectGoogle }) => {
   const [activeTab, setActiveTab] = useState('base');
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
@@ -1283,7 +1399,7 @@ const VaultDashboard = ({ state, dispatch, onLock, onExportVault }) => {
             )}
             {activeTab === 'settings' && (
               <motion.div key="settings" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }} transition={{ duration: 0.2 }} className="h-full">
-                <SettingsView state={state} dispatch={dispatch} onExportVault={onExportVault} onLock={onLock} />
+                <SettingsView state={state} dispatch={dispatch} onExportVault={onExportVault} onLock={onLock} vaultName={vaultName} storageLocation={storageLocation} googleProfile={googleProfile} onListDriveFiles={onListDriveFiles} onSwitchDriveFile={onSwitchDriveFile} onDisconnectGoogle={onDisconnectGoogle} />
               </motion.div>
             )}
           </AnimatePresence>

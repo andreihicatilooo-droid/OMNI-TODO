@@ -76,6 +76,7 @@ function App() {
   const driveFileRef = useRef(null);                    // { fileId, name } активного файла на Drive
   const [googleProfile, setGoogleProfile] = useState(null);
   const [createTarget, setCreateTarget] = useState('local'); // 'local' | 'drive'
+  const [storageLocation, setStorageLocation] = useState('localStorage'); // 'drive' | 'local' | 'localStorage'
 
   // На старте: ищем запомненный файл (FS API) либо vault в localStorage (fallback).
   useEffect(() => {
@@ -145,14 +146,17 @@ function App() {
         const created = await createVaultOnDrive(fileName, payload);
         driveFileRef.current = { fileId: created.id, name: created.name };
         setVaultName(created.name);
+        setStorageLocation('drive');
       } else if (supportsFS) {
         const created = await createVaultFile(payload, fileName);
         if (!created) return; // пользователь отменил выбор файла
         vaultHandleRef.current = created.handle;
         setVaultName(created.name);
         await rememberHandle(created.handle, created.name);
+        setStorageLocation('local');
       } else {
         await saveVault(payload);
+        setStorageLocation('localStorage');
       }
       setPassword(pw);
       dispatch({ type: 'LOAD', payload: emptyState });
@@ -265,9 +269,13 @@ function App() {
       // Закрепляем активный файл за сессией.
       if (pendingFile?.drive) {
         driveFileRef.current = pendingFile.drive;
+        setStorageLocation('drive');
       } else if (pendingFile?.handle) {
         vaultHandleRef.current = pendingFile.handle;
         await rememberHandle(pendingFile.handle, pendingFile.name);
+        setStorageLocation('local');
+      } else {
+        setStorageLocation('localStorage');
       }
       dispatch({ type: 'LOAD', payload: { ...emptyState, ...data } });
       setPassword(pw);
@@ -280,7 +288,9 @@ function App() {
     }
   };
 
-  const handleLock = async () => {
+  // Блокировка сессии. signOutGoogle=false сохраняет вход в Google
+  // (нужно при переключении файлов на Drive).
+  const lockSession = async ({ signOutGoogle = true } = {}) => {
     if (saveTimer.current) clearTimeout(saveTimer.current);
     if (password) {
       try { await persist(state); } catch { /* ignore */ }
@@ -290,16 +300,49 @@ function App() {
     vaultHandleRef.current = null;
     driveFileRef.current = null;
     setCreateTarget('local');
-    setGoogleProfile(null);
-    googleSignOut();
-    setPendingFile(null);
+    setStorageLocation('localStorage');
+    if (signOutGoogle) {
+      setGoogleProfile(null);
+      googleSignOut();
+    }
     dispatch({ type: 'LOAD', payload: emptyState });
-    // Предлагаем переоткрыть последний файл при следующем входе.
     if (supportsFS) {
       const remembered = await recallHandle();
       setCanReopen(Boolean(remembered?.handle));
     }
     setMode('unlock');
+  };
+
+  const handleLock = () => lockSession({ signOutGoogle: true });
+
+  // Список файлов базы на Google Drive (для панели настроек).
+  const handleListDriveFiles = async () => {
+    try {
+      return await listVaultFiles();
+    } catch (e) {
+      console.error('Не удалось получить список файлов Drive', e);
+      return [];
+    }
+  };
+
+  // Переключение на другой файл базы на Drive: блокируем сессию (Google вход
+  // сохраняется) и отправляем на ввод пароля для выбранного файла.
+  const handleSwitchDriveFile = async (file) => {
+    try {
+      const content = await downloadVaultFile(file.id);
+      if (!content.startsWith('BASE1:')) { setError('Файл базы повреждён'); return; }
+      await lockSession({ signOutGoogle: false });
+      setPendingFile({ content, name: file.name, handle: null, drive: { fileId: file.id, name: file.name } });
+      setVaultName(file.name);
+      setMode('unlock');
+    } catch (e) {
+      console.error('Не удалось переключить файл базы', e);
+    }
+  };
+
+  // Отвязать Google: выйти из аккаунта и заблокировать сессию.
+  const handleDisconnectGoogle = async () => {
+    await lockSession({ signOutGoogle: true });
   };
 
   const handleExportVault = async () => {
@@ -348,6 +391,11 @@ function App() {
             onLock={handleLock}
             onExportVault={handleExportVault}
             vaultName={vaultName}
+            storageLocation={storageLocation}
+            googleProfile={googleProfile}
+            onListDriveFiles={handleListDriveFiles}
+            onSwitchDriveFile={handleSwitchDriveFile}
+            onDisconnectGoogle={handleDisconnectGoogle}
           />
         )}
       </AnimatePresence>
