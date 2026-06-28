@@ -7,6 +7,10 @@ import {
   fsAccessSupported, pickVaultFile, createVaultFile, writeToHandle,
   readFromHandle, verifyPermission, rememberHandle, recallHandle, forgetHandle,
 } from './lib/crypto';
+import {
+  googleConfigured, signInWithGoogle, getGoogleProfile, googleSignOut,
+  listVaultFiles, downloadVaultFile, createVaultOnDrive, updateVaultOnDrive,
+} from './lib/googleDrive';
 import { AnimatePresence } from 'framer-motion';
 
 const emptyState = {
@@ -64,9 +68,14 @@ function App() {
   const supportsFS = fsAccessSupported();
   const vaultHandleRef = useRef(null);          // активный FS-хэндл (если есть)
   const [vaultName, setVaultName] = useState('');// имя активного файла
-  const [pendingFile, setPendingFile] = useState(null); // { content, name, handle } выбран, но не разблокирован
+  const [pendingFile, setPendingFile] = useState(null); // { content, name, handle, drive } выбран, но не разблокирован
   const [canReopen, setCanReopen] = useState(false);    // есть запомненный последний файл
   const saveTimer = useRef(null);
+
+  // Google Drive: контекст активного файла на диске и профиль пользователя.
+  const driveFileRef = useRef(null);                    // { fileId, name } активного файла на Drive
+  const [googleProfile, setGoogleProfile] = useState(null);
+  const [createTarget, setCreateTarget] = useState('local'); // 'local' | 'drive'
 
   // На старте: ищем запомненный файл (FS API) либо vault в localStorage (fallback).
   useEffect(() => {
@@ -95,6 +104,12 @@ function App() {
     if (!password) return;
     try {
       const payload = await encryptData(nextState, password);
+      // 1. Активный файл на Google Drive
+      if (driveFileRef.current?.fileId) {
+        await updateVaultOnDrive(driveFileRef.current.fileId, payload);
+        return;
+      }
+      // 2. Локальный файл через File System Access API
       const handle = vaultHandleRef.current;
       if (supportsFS && handle) {
         const ok = await verifyPermission(handle, true);
@@ -104,6 +119,7 @@ function App() {
         }
         // нет разрешения — подстрахуемся localStorage
       }
+      // 3. Fallback: localStorage
       await saveVault(payload);
     } catch (e) {
       console.error('Не удалось сохранить базу', e);
@@ -121,9 +137,16 @@ function App() {
   const handleCreate = async (pw) => {
     try {
       setError('');
+      const fileName = `omni_${new Date().toISOString().split('T')[0]}.vault`;
       const payload = await encryptData(emptyState, pw);
-      if (supportsFS) {
-        const created = await createVaultFile(payload, `omni_${new Date().toISOString().split('T')[0]}.vault`);
+
+      if (createTarget === 'drive') {
+        // Создаём зашифрованный файл базы на Google Drive
+        const created = await createVaultOnDrive(fileName, payload);
+        driveFileRef.current = { fileId: created.id, name: created.name };
+        setVaultName(created.name);
+      } else if (supportsFS) {
+        const created = await createVaultFile(payload, fileName);
         if (!created) return; // пользователь отменил выбор файла
         vaultHandleRef.current = created.handle;
         setVaultName(created.name);
@@ -136,7 +159,36 @@ function App() {
       setHasVault(true);
       setLocked(false);
     } catch (e) {
-      setError('Ошибка при создании файла базы');
+      setError(createTarget === 'drive' ? 'Ошибка при создании файла на Google Drive' : 'Ошибка при создании файла базы');
+      console.error(e);
+    }
+  };
+
+  // Вход через Google: авторизация → поиск файла базы на Drive.
+  const handleGoogleLogin = async () => {
+    setError('');
+    try {
+      const token = await signInWithGoogle();
+      const profile = await getGoogleProfile(token);
+      setGoogleProfile(profile);
+
+      const files = await listVaultFiles(token);
+      if (files.length > 0) {
+        // Нашли существующий файл — скачиваем самый свежий и просим пароль.
+        const f = files[0];
+        const content = await downloadVaultFile(f.id, token);
+        if (!content.startsWith('BASE1:')) { setError('Файл базы на Google Drive повреждён'); return; }
+        setPendingFile({ content, name: f.name, handle: null, drive: { fileId: f.id, name: f.name } });
+        setVaultName(f.name);
+        setCanReopen(false);
+        setMode('unlock');
+      } else {
+        // Файла ещё нет — создаём новый на Drive.
+        setCreateTarget('drive');
+        setMode('create');
+      }
+    } catch (e) {
+      setError(e.message || 'Не удалось войти через Google');
       console.error(e);
     }
   };
@@ -144,6 +196,7 @@ function App() {
   // Выбор существующего файла базы (до ввода пароля).
   const handlePickFile = async () => {
     setError('');
+    setCreateTarget('local');
     if (supportsFS) {
       try {
         const picked = await pickVaultFile();
@@ -210,7 +263,9 @@ function App() {
       const data = await decryptData(encryptedData, pw);
 
       // Закрепляем активный файл за сессией.
-      if (pendingFile?.handle) {
+      if (pendingFile?.drive) {
+        driveFileRef.current = pendingFile.drive;
+      } else if (pendingFile?.handle) {
         vaultHandleRef.current = pendingFile.handle;
         await rememberHandle(pendingFile.handle, pendingFile.name);
       }
@@ -233,6 +288,10 @@ function App() {
     setLocked(true);
     setPassword('');
     vaultHandleRef.current = null;
+    driveFileRef.current = null;
+    setCreateTarget('local');
+    setGoogleProfile(null);
+    googleSignOut();
     setPendingFile(null);
     dispatch({ type: 'LOAD', payload: emptyState });
     // Предлагаем переоткрыть последний файл при следующем входе.
@@ -271,8 +330,12 @@ function App() {
             onOpenFile={handleOpenFileFallback}
             onReopenLast={handleReopenLast}
             onForgetLast={async () => { await forgetHandle(); setCanReopen(false); setVaultName(''); }}
+            onGoogleLogin={handleGoogleLogin}
             hasVault={hasVault}
             supportsFS={supportsFS}
+            googleEnabled={googleConfigured()}
+            googleProfile={googleProfile}
+            createTarget={createTarget}
             pendingFileName={pendingFile?.name || (canReopen ? vaultName : '')}
             canReopen={canReopen}
             error={error}

@@ -1,10 +1,20 @@
 import { useState, useRef } from 'react';
-import { Lock, Shield, KeyRound, Eye, EyeOff, AlertTriangle, Upload, Unlock, FileText, RotateCcw, X, FilePlus2 } from 'lucide-react';
+import { Lock, Shield, KeyRound, Eye, EyeOff, AlertTriangle, Upload, Unlock, FileText, RotateCcw, X, FilePlus2, Cloud, HardDrive } from 'lucide-react';
 import { motion } from 'framer-motion';
 
+// Иконка Google (официальные цвета).
+const GoogleIcon = ({ size = 18 }) => (
+  <svg width={size} height={size} viewBox="0 0 48 48" aria-hidden="true">
+    <path fill="#FFC107" d="M43.611 20.083H42V20H24v8h11.303c-1.649 4.657-6.08 8-11.303 8-6.627 0-12-5.373-12-12s5.373-12 12-12c3.059 0 5.842 1.154 7.961 3.039l5.657-5.657C34.046 6.053 29.268 4 24 4 12.955 4 4 12.955 4 24s8.955 20 20 20 20-8.955 20-20c0-1.341-.138-2.65-.389-3.917z"/>
+    <path fill="#FF3D00" d="M6.306 14.691l6.571 4.819C14.655 15.108 18.961 12 24 12c3.059 0 5.842 1.154 7.961 3.039l5.657-5.657C34.046 6.053 29.268 4 24 4 16.318 4 9.656 8.337 6.306 14.691z"/>
+    <path fill="#4CAF50" d="M24 44c5.166 0 9.86-1.977 13.409-5.192l-6.19-5.238C29.211 35.091 26.715 36 24 36c-5.202 0-9.619-3.317-11.283-7.946l-6.522 5.025C9.505 39.556 16.227 44 24 44z"/>
+    <path fill="#1976D2" d="M43.611 20.083H42V20H24v8h11.303c-.792 2.237-2.231 4.166-4.087 5.571.001-.001 6.19 5.238 6.19 5.238C36.971 39.205 44 34 44 24c0-1.341-.138-2.65-.389-3.917z"/>
+  </svg>
+);
+
 const LockScreen = ({
-  mode, setMode, onUnlock, onCreate, onPickFile, onOpenFile, onReopenLast, onForgetLast,
-  hasVault, supportsFS, pendingFileName, canReopen, error,
+  mode, setMode, onUnlock, onCreate, onPickFile, onOpenFile, onReopenLast, onForgetLast, onGoogleLogin,
+  hasVault, supportsFS, googleEnabled, googleProfile, createTarget, pendingFileName, canReopen, error,
 }) => {
   const [pw, setPw] = useState('');
   const [pw2, setPw2] = useState('');
@@ -80,11 +90,19 @@ const LockScreen = ({
         {/* Кнопка выбора файла (если файл ещё не выбран в режиме разблокировки) */}
         {needsFileSelection ? (
           <div className="space-y-3">
+            {googleEnabled && (
+              <button
+                onClick={onGoogleLogin}
+                className="w-full bg-white hover:bg-gray-50 text-gray-700 font-semibold py-3 rounded-lg transition-all shadow-sm flex items-center justify-center gap-2.5 active:scale-95 border border-gray-200"
+              >
+                <GoogleIcon /> Войти через Google
+              </button>
+            )}
             <button
               onClick={onPickFile}
               className="w-full bg-theme-text hover:bg-theme-text/90 text-theme-bg font-semibold py-3 rounded-lg transition-all shadow-sm flex items-center justify-center gap-2 active:scale-95"
             >
-              <Upload size={18} /> Выбрать файл базы (.vault)
+              <HardDrive size={18} /> Выбрать локальный файл (.vault)
             </button>
             {canReopen && (
               <button
@@ -97,6 +115,20 @@ const LockScreen = ({
           </div>
         ) : (
           <div className="space-y-4">
+            {/* Профиль Google / цель создания на Drive */}
+            {googleProfile && (
+              <div className="flex items-center gap-2 bg-theme-bg border border-theme-border rounded-lg px-3 py-2.5">
+                <Cloud size={16} className="text-theme-accent shrink-0" />
+                <span className="text-sm text-theme-text truncate">
+                  {googleProfile.email || googleProfile.name}
+                </span>
+              </div>
+            )}
+            {mode === 'create' && createTarget === 'drive' && (
+              <p className="text-xs text-theme-muted flex items-center gap-1.5">
+                <Cloud size={13} className="text-theme-accent" /> Файл базы будет создан на вашем Google Drive
+              </p>
+            )}
             <div className="relative">
               <KeyRound size={18} className="absolute left-3 top-3.5 text-theme-accent" />
               <input
@@ -138,9 +170,28 @@ const LockScreen = ({
               className="w-full bg-theme-text hover:bg-theme-text/90 disabled:opacity-50 text-theme-bg font-semibold py-3 rounded-lg transition-all shadow-sm flex items-center justify-center gap-2 active:scale-95"
             >
               {busy ? 'Обработка...' : mode === 'create'
-                ? <><FilePlus2 size={18} /> Создать файл базы</>
+                ? (createTarget === 'drive'
+                    ? <><Cloud size={18} /> Создать на Google Drive</>
+                    : <><FilePlus2 size={18} /> Создать файл базы</>)
                 : <><Unlock size={18} /> Войти</>}
             </button>
+
+            {/* В режиме создания: альтернатива — создать на Google Drive */}
+            {mode === 'create' && createTarget !== 'drive' && googleEnabled && (
+              <>
+                <div className="flex items-center gap-3 py-1">
+                  <div className="flex-1 h-px bg-theme-border" />
+                  <span className="text-xs text-theme-muted">или</span>
+                  <div className="flex-1 h-px bg-theme-border" />
+                </div>
+                <button
+                  onClick={onGoogleLogin}
+                  className="w-full bg-white hover:bg-gray-50 text-gray-700 font-semibold py-3 rounded-lg transition-all shadow-sm flex items-center justify-center gap-2.5 active:scale-95 border border-gray-200"
+                >
+                  <GoogleIcon /> Создать на Google Drive
+                </button>
+              </>
+            )}
           </div>
         )}
 
