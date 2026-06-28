@@ -3,6 +3,7 @@ import cors from 'cors';
 import session from 'express-session';
 import dotenv from 'dotenv';
 import { GoogleAuth, OAuth2Client } from 'google-auth-library';
+import OpenAI from 'openai';
 import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
@@ -18,19 +19,30 @@ const ALLOWED_ORIGINS = (process.env.FRONTEND_URL || 'http://localhost:1337,http
   .split(',').map((s) => s.trim()).filter(Boolean);
 app.use(cors({
   origin: (origin, cb) => {
-    // Разрешаем запросы без Origin (curl, серверные) и из разрешённых ориджинов.
     if (!origin || ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
     return cb(new Error('Not allowed by CORS'));
   },
   credentials: true,
 }));
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 app.use(session({
   secret: process.env.SESSION_SECRET || 'omni-secret',
   resave: false,
   saveUninitialized: false,
   cookie: { secure: false, httpOnly: true, sameSite: 'lax' }
 }));
+
+const githubModelsClient = process.env.GITHUB_TOKEN
+  ? new OpenAI({
+    baseURL: 'https://models.github.ai/inference',
+    apiKey: process.env.GITHUB_TOKEN,
+    defaultQuery: {
+      'api-version': '2024-08-01-preview',
+    },
+  })
+  : null;
+
 
 const auth = new GoogleAuth({
   scopes: 'https://www.googleapis.com/auth/cloud-platform'
@@ -682,7 +694,7 @@ app.post('/api/omni', async (req, res) => {
     let instructions = "";
     try {
       instructions = fs.readFileSync(OMNI_INSTRUCTIONS_PATH, 'utf8');
-    } catch (e) {
+    } catch {
       console.warn("Could not read OMNI instructions, using default.");
     }
 
@@ -823,7 +835,7 @@ const OAUTH_PROVIDERS = {
 };
 
 const AI_TOKENS_FILE = path.join(process.cwd(), '.oauth-tokens.json');
-const STATE_TTL_MS = 10 * 60 * 1000; // CSRF state живёт 10 минут
+const STATE_TTL_MS = 10 * 60 * 1000;
 
 const loadAiTokens = () => {
   try { return JSON.parse(fs.readFileSync(AI_TOKENS_FILE, 'utf8')); } catch { return {}; }
@@ -835,15 +847,13 @@ const saveAiTokens = (tokens) => {
 
 const aiOauthStates = new Map();
 
-// Экранирование для безопасной вставки в HTML/JS popup-страницы (защита от XSS).
 const escapeHtml = (s) => String(s ?? '')
   .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
   .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 
-const aiPopupResponse = (payload) => {
+const aiPopupResponse = (payload, source = 'omni-oauth') => {
   const safeError = escapeHtml(payload.error);
-  // Значение для opener сериализуем как JSON и экранируем закрывающий тег.
-  const msgJson = JSON.stringify({ source: 'omni-oauth', ...payload }).replace(/</g, '\\u003c');
+  const msgJson = JSON.stringify({ source, ...payload }).replace(/</g, '\\u003c');
   return `<!doctype html>
 <html><head><meta charset="utf-8"><title>OAuth</title></head>
 <body style="font-family:system-ui;background:#1a1a1a;color:#eee;display:flex;align-items:center;justify-content:center;height:100vh;margin:0">
@@ -890,8 +900,6 @@ app.get('/api/auth/:provider/callback', async (req, res) => {
 
   const { code, state, error: providerError } = req.query;
 
-  // Сначала ВАЛИДИРУЕМ state (CSRF + TTL) — до обработки любых других параметров,
-  // чтобы ветку ошибки нельзя было дёрнуть без валидного state.
   const stored = aiOauthStates.get(state);
   if (!stored || stored.provider !== providerKey) {
     return res.send(aiPopupResponse({ ok: false, provider: providerKey, error: 'Неверный или истёкший state (CSRF)' }));
@@ -947,6 +955,43 @@ app.get('/api/auth/:provider/callback', async (req, res) => {
   }
 });
 
+app.post('/api/auth/telegram/callback', (req, res) => {
+  const { hash, ...fields } = req.body || {};
+  const botToken = process.env.TELEGRAM_BOT_TOKEN;
+
+  if (!botToken) {
+    return res.send(aiPopupResponse({ ok: false, provider: 'telegram', error: 'Telegram bot token is not configured' }, 'omni-telegram-auth'));
+  }
+
+  if (!hash) {
+    return res.send(aiPopupResponse({ ok: false, provider: 'telegram', error: 'Telegram auth data is missing' }, 'omni-telegram-auth'));
+  }
+
+  const dataCheckString = Object.entries(fields)
+    .filter(([, value]) => value !== undefined && value !== '')
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([key, value]) => `${key}=${value}`)
+    .join('\n');
+
+  const secretKey = crypto.createHash('sha256').update(botToken).digest();
+  const computedHash = crypto.createHmac('sha256', secretKey).update(dataCheckString).digest('hex');
+
+  if (computedHash !== hash) {
+    return res.send(aiPopupResponse({ ok: false, provider: 'telegram', error: 'Telegram auth data is invalid' }, 'omni-telegram-auth'));
+  }
+
+  const user = {
+    id: Number(fields.id),
+    first_name: fields.first_name || null,
+    last_name: fields.last_name || null,
+    username: fields.username || null,
+    photo_url: fields.photo_url || null,
+    auth_date: Number(fields.auth_date),
+  };
+
+  return res.send(aiPopupResponse({ ok: true, provider: 'telegram', user }, 'omni-telegram-auth'));
+});
+
 app.get('/api/auth/status', (req, res) => {
   const tokens = loadAiTokens();
   const status = {};
@@ -972,8 +1017,126 @@ app.post('/api/auth/:provider/disconnect', (req, res) => {
   res.json({ ok: true });
 });
 
-// The "catchall" handler: for any request that doesn't
-// match one above, send back React's index.html file.
+app.post('/api/github-models/chat', async (req, res) => {
+  try {
+    const { prompt, system, model, temperature, top_p } = req.body || {};
+
+    if (!githubModelsClient) {
+      return res.status(500).json({
+        error: 'GitHub Models не настроен',
+        message: 'Добавьте GITHUB_TOKEN в .env',
+      });
+    }
+
+    if (!prompt || typeof prompt !== 'string') {
+      return res.status(400).json({ error: 'Требуется текстовый prompt' });
+    }
+
+    const safeTemperature = typeof temperature === 'number' ? temperature : 0.7;
+    const safeTopP = typeof top_p === 'number' ? top_p : 1;
+    const safeModel = typeof model === 'string' && model.trim() ? model : 'openai/gpt-5-chat';
+
+    const messages = [
+      {
+        role: 'system',
+        content: typeof system === 'string' && system.trim()
+          ? system
+          : 'Ты полезный ассистент. Отвечай кратко и по делу.',
+      },
+      {
+        role: 'user',
+        content: prompt,
+      },
+    ];
+
+    const response = await githubModelsClient.chat.completions.create({
+      model: safeModel,
+      messages,
+      temperature: safeTemperature,
+      top_p: safeTopP,
+    });
+
+    const choice = response.choices?.[0];
+    const text = choice?.message?.content ?? '';
+
+    return res.json({
+      ok: true,
+      model: response.model,
+      text,
+      usage: response.usage || null,
+    });
+  } catch (error) {
+    console.error('GitHub Models proxy error:', error);
+    return res.status(500).json({
+      error: 'Внутренняя ошибка прокси GitHub Models',
+      message: error?.message || 'Unknown error',
+    });
+  }
+});
+
+app.post('/api/github-models/responses', async (req, res) => {
+  try {
+    const { input, instructions, model, temperature, max_output_tokens } = req.body || {};
+
+    if (!githubModelsClient) {
+      return res.status(500).json({
+        error: 'GitHub Models не настроен',
+        message: 'Добавьте GITHUB_TOKEN в .env',
+      });
+    }
+
+    if (!input || typeof input !== 'string') {
+      return res.status(400).json({ error: 'Требуется текстовое поле input' });
+    }
+
+    const safeModel = typeof model === 'string' && model.trim()
+      ? model
+      : 'xai/grok-4.20-non-reasoning';
+
+    const requestBody = {
+      model: safeModel,
+      input,
+    };
+
+    if (typeof instructions === 'string' && instructions.trim()) {
+      requestBody.instructions = instructions;
+    }
+    if (typeof temperature === 'number') {
+      requestBody.temperature = temperature;
+    }
+    if (typeof max_output_tokens === 'number') {
+      requestBody.max_output_tokens = max_output_tokens;
+    }
+
+    const response = await githubModelsClient.responses.create(requestBody);
+
+    let text = response.output_text || '';
+    if (!text && Array.isArray(response.output)) {
+      text = response.output
+        .flatMap((item) => item?.content || [])
+        .filter((part) => part?.type === 'output_text')
+        .map((part) => part?.text || '')
+        .join('\n')
+        .trim();
+    }
+
+    return res.json({
+      ok: true,
+      id: response.id,
+      model: response.model,
+      text,
+      usage: response.usage || null,
+      raw: response,
+    });
+  } catch (error) {
+    console.error('GitHub Models responses proxy error:', error);
+    return res.status(500).json({
+      error: 'Внутренняя ошибка Responses API',
+      message: error?.message || 'Unknown error',
+    });
+  }
+});
+
 app.get(/.*/, (req, res) => {
   const __dirname = path.resolve();
   res.sendFile(path.join(__dirname, 'dist', 'index.html'));

@@ -1,4 +1,4 @@
-import { useState, useReducer, useEffect, useRef, useCallback } from 'react';
+import { useState, useReducer, useEffect, useRef, useCallback, useMemo } from 'react';
 import LockScreen from './components/LockScreen';
 import VaultDashboard from './components/VaultDashboard';
 import ShaderBG from './components/ShaderBG';
@@ -8,7 +8,7 @@ import {
   readFromHandle, verifyPermission, rememberHandle, recallHandle, forgetHandle,
 } from './lib/crypto';
 import {
-  googleConfigured, signInWithGoogle, getGoogleProfile, googleSignOut,
+  googleConfigured, signInWithGoogle as signInWithGoogleDrive, getGoogleProfile, googleSignOut,
   listVaultFiles, downloadVaultFile, createVaultOnDrive, updateVaultOnDrive,
 } from './lib/googleDrive';
 import { AnimatePresence } from 'framer-motion';
@@ -19,6 +19,12 @@ const emptyState = {
   projects: [],
   mindmaps: [],
   gallery: [],
+};
+
+const deriveTelegramPassword = async (telegramUser) => {
+  const seed = `${telegramUser?.id ?? 'telegram'}:${telegramUser?.username || telegramUser?.first_name || 'user'}`;
+  const hashBuffer = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(seed));
+  return Array.from(new Uint8Array(hashBuffer)).map((b) => b.toString(16).padStart(2, '0')).join('');
 };
 
 const appReducer = (state, action) => {
@@ -35,6 +41,25 @@ const appReducer = (state, action) => {
       return { ...state, projects: state.projects.map(p => p.id === action.payload.id ? { ...p, ...action.payload } : p) };
     case 'ADD_CERBER_MSG':
       return { ...state, cerberHistory: [...(state.cerberHistory || []), action.payload] };
+    case 'ADD_CHAT_SESSION':
+      return { ...state, chatSessions: [...(state.chatSessions || []), { id: action.payload?.id || Date.now(), name: 'Новый чат', created: new Date().toISOString(), messages: [] }] };
+    case 'DELETE_CHAT_SESSION':
+      return { ...state, chatSessions: (state.chatSessions || []).filter(s => s.id !== action.payload) };
+    case 'ADD_MSG_TO_SESSION':
+      return {
+        ...state,
+        chatSessions: (state.chatSessions || []).map(s =>
+          s.id !== action.payload.sessionId ? s : {
+            ...s,
+            name: s.name === 'Новый чат' && action.payload.msg.role === 'user'
+              ? action.payload.msg.content.slice(0, 28) + (action.payload.msg.content.length > 28 ? '…' : '')
+              : s.name,
+            messages: [...s.messages, action.payload.msg],
+          }
+        ),
+      };
+    case 'RENAME_CHAT_SESSION':
+      return { ...state, chatSessions: (state.chatSessions || []).map(s => s.id === action.payload.id ? { ...s, name: action.payload.name } : s) };
     case 'DELETE_PROJECT':
       return { ...state, projects: state.projects.filter(p => p.id !== action.payload) };
     case 'ADD_MINDMAP':
@@ -49,8 +74,13 @@ const appReducer = (state, action) => {
       return { ...state, gallery: (state.gallery || []).filter(img => img.id !== action.payload) };
     case 'UPDATE_SETTINGS':
       return { ...state, settings: { ...state.settings, ...action.payload } };
-    case 'LOAD':
-      return action.payload;
+    case 'LOAD': {
+      const loaded = action.payload;
+      if (loaded.cerberHistory?.length > 0 && !(loaded.chatSessions?.length > 0)) {
+        return { ...loaded, chatSessions: [{ id: Date.now(), name: 'История', created: loaded.cerberHistory[0]?.timestamp || new Date().toISOString(), messages: loaded.cerberHistory }] };
+      }
+      return loaded;
+    }
     default:
       return state;
   }
@@ -71,6 +101,11 @@ function App() {
   const [pendingFile, setPendingFile] = useState(null); // { content, name, handle, drive } выбран, но не разблокирован
   const [canReopen, setCanReopen] = useState(false);    // есть запомненный последний файл
   const saveTimer = useRef(null);
+  const telegramAuthConfig = useMemo(() => import.meta.env.VITE_TELEGRAM_BOT_USERNAME ? {
+    enabled: true,
+    botUsername: import.meta.env.VITE_TELEGRAM_BOT_USERNAME,
+    callbackUrl: import.meta.env.VITE_TELEGRAM_CALLBACK_URL || (import.meta.env.DEV ? 'http://localhost:3001/api/auth/telegram/callback' : `${window.location.origin}/api/auth/telegram/callback`),
+  } : { enabled: false, botUsername: '', callbackUrl: '' }, []);
 
   // Google Drive: контекст активного файла на диске и профиль пользователя.
   const driveFileRef = useRef(null);                    // { fileId, name } активного файла на Drive
@@ -172,7 +207,7 @@ function App() {
   const handleGoogleLogin = async () => {
     setError('');
     try {
-      const token = await signInWithGoogle();
+      const token = await signInWithGoogleDrive();
       const profile = await getGoogleProfile(token);
       setGoogleProfile(profile);
 
@@ -313,6 +348,16 @@ function App() {
     setMode('unlock');
   };
 
+  const handleTelegramLogin = async (telegramUser) => {
+    if (!telegramUser?.id) throw new Error('Не удалось получить данные Telegram');
+    const telegramPassword = await deriveTelegramPassword(telegramUser);
+    if (mode === 'create') {
+      await handleCreate(telegramPassword);
+    } else {
+      await handleUnlock(telegramPassword);
+    }
+  };
+
   const handleLock = () => lockSession({ signOutGoogle: true });
 
   // Список файлов базы на Google Drive (для панели настроек).
@@ -382,6 +427,8 @@ function App() {
             pendingFileName={pendingFile?.name || (canReopen ? vaultName : '')}
             canReopen={canReopen}
             error={error}
+            onTelegramLogin={handleTelegramLogin}
+            telegramAuthConfig={telegramAuthConfig}
           />
         ) : (
           <VaultDashboard
