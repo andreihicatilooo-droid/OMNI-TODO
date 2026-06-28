@@ -1,16 +1,62 @@
-# React + Vite
+# OMNI TODO Vault
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+OMNI TODO Vault — это локальное зашифрованное приложение для управления заметками, проектами, картами мыслей и генерации изображений с AI-поддержкой.
 
-Currently, two official plugins are available:
+## Основные возможности
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+- Локальное шифрование данных AES-GCM 256 на клиенте
+- Хранилище пароля и зашифрованная база в `localStorage`
+- Создание и разблокировка защищенного хранилища
+- Экспорт базы `.vault` и резервное копирование в JSON
+- Удобный интерфейс для заметок, проектов, mindmap и AI-ассистента
+- Интеграция с внешним прокси-сервером для OMNI AI и генерации изображений
+- Поддержка бесплатных локальных текстовых моделей через Ollama
 
-## React Compiler
+## Разработка
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+Установите зависимости и запустите приложение:
 
-## Expanding the ESLint configuration
+```bash
+npm install
+npm run dev
+```
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+API-прокси запускается отдельно на `http://localhost:3001`.
+
+Для бесплатных локальных текстовых моделей можно дополнительно запустить Ollama:
+
+```bash
+ollama serve
+ollama pull llama3.2:3b
+```
+
+## Запуск прокси-сервера
+
+```bash
+node server.js
+```
+
+## Структура
+
+- `src/App.jsx` — главный компонент приложения
+- `src/lib/crypto.js` — шифрование / дешифрование + экспорт/импорт файлов
+- `src/components/LockScreen.jsx` — экран создания / разблокировки
+- `src/components/VaultDashboard.jsx` — основной UI для работы с базой
+- `src/components/MindmapView.jsx` — редактор карт мыслей
+- `server.js` — прокси для вызовов OMNI, генерации изображений и локальных Ollama-моделей через `/api/ollama` и `/api/ollama/models`
+
+## Важные заметки
+
+- Пароли не хранятся на сервере и не восстанавливаются. Если пароль утерян — доступ к зашифрованным данным потерян.
+- Используйте экспорт `.vault` для безопасного бэкапа, а JSON-экспорт только для переносимых данных.
+- `server.js` содержит жестко заданные параметры Google/Vertex AI. В продакшене рекомендуем хранить конфигурацию в переменных окружения.
+- Для бесплатных локальных моделей базовый URL Ollama можно задать через `OLLAMA_BASE_URL` или прямо из настроек приложения.
+
+## Улучшения, выполненные в этом проекте
+
+- добавлен автоматический таймер авто-блокировки по `lockTimeout`
+- улучшена проверка импорта `.vault`
+- улучшена совместимость скачивания файла при экспорте
+- исправлена генерация узлов mindmap из AI, чтобы связи исходили от правильных ID
+
+Создайте приложение для [цели] с пользовательским интерфейсом, который позволяет пользователю выполнять [задачу] в [среде].

@@ -214,9 +214,12 @@ export async function saveVaultToFile(content, filename = 'data.vault') {
       const blob = new Blob([content], { type: 'text/plain' });
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
+      document.body.appendChild(link);
       link.href = url;
       link.download = filename;
+      link.style.display = 'none';
       link.click();
+      document.body.removeChild(link);
       URL.revokeObjectURL(url);
       return true;
     }

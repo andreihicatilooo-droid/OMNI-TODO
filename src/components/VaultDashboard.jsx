@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { Menu, X, Settings, Plus, Search, Trash2, Pin, Share2, GitBranch, Clock, LogOut, KeyRound, Bot, Send, Image as ImageIcon, Loader2, XCircle, Lock, Database, Download, Upload, Network, CheckCircle } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import MindmapView from './MindmapView';
@@ -235,39 +235,133 @@ const BaseView = ({ state, dispatch }) => {
   );
 };
 
+const FREE_TEXT_MODEL_PRESETS = [
+  { value: 'llama3.2:3b', label: 'Llama 3.2 3B' },
+  { value: 'qwen2.5:3b', label: 'Qwen 2.5 3B' },
+  { value: 'gemma2:2b', label: 'Gemma 2 2B' },
+  { value: 'phi3:mini', label: 'Phi-3 Mini' },
+];
+
 // ==== OMNI AI VIEW (Mind Extractor) ====
 const OmniView = ({ state, dispatch }) => {
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
+  const [freeModels, setFreeModels] = useState([]);
+  const [freeModelsLoading, setFreeModelsLoading] = useState(false);
+  const [freeModelsError, setFreeModelsError] = useState('');
 
   const history = state.cerberHistory || [];
+  const assistantProvider = state.settings?.assistantProvider || 'omni';
+  const selectedFreeModel = state.settings?.freeTextModel || FREE_TEXT_MODEL_PRESETS[0].value;
+  const isLocalModelMode = assistantProvider === 'ollama';
+  const isGeminiMode = assistantProvider === 'gemini';
+
+  const freeModelOptions = [
+    ...freeModels.map((model) => ({ value: model.name, label: model.name })),
+    ...FREE_TEXT_MODEL_PRESETS.filter((preset) => !freeModels.some((model) => model.name === preset.value)),
+  ];
+
+  const updateAssistantSettings = (payload) => {
+    dispatch({ type: 'UPDATE_SETTINGS', payload });
+  };
+
+  const loadFreeModels = React.useCallback(async () => {
+    setFreeModelsLoading(true);
+    setFreeModelsError('');
+
+    try {
+      const response = await fetch('/api/ollama/models');
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data?.error || data?.message || 'Не удалось загрузить бесплатные модели');
+      }
+
+      const models = Array.isArray(data.models) ? data.models : [];
+      setFreeModels(models);
+      if (models.length === 0) {
+        setFreeModelsError('Ollama доступен, но моделей пока нет. Например: ollama pull llama3.2:3b');
+      }
+    } catch (error) {
+      setFreeModels([]);
+      setFreeModelsError(error.message || 'Не удалось подключиться к Ollama');
+    } finally {
+      setFreeModelsLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      loadFreeModels();
+    }, 0);
+
+    return () => window.clearTimeout(timer);
+  }, [loadFreeModels]);
 
   const parseActions = (text) => {
     const actions = [];
-    // Pattern for set_reminder(task="...", date_time_str="...")
     const reminderRegex = /set_reminder\s*\(\s*task\s*=\s*["']([^"']+)["']\s*(?:,\s*date_time_str\s*=\s*["']([^"']+)["'])?\s*\)/g;
     let match;
     while ((match = reminderRegex.exec(text)) !== null) {
-      actions.push({ type: 'ADD_ITEM', payload: { title: match[1], type: 'task', content: match[2] || 'Извлечено через OMNI' } });
+      actions.push({ type: 'ADD_ITEM', payload: { title: match[1], type: 'task', content: match[2] || 'Извлечено через ассистента' } });
     }
 
-    // Pattern for new project suggestions
     if (text.toLowerCase().includes('создать проект') || text.toLowerCase().includes('create project')) {
-       const projectMatch = text.match(/(?:проект|project)\s*["']([^"']+)["']/i);
-       if (projectMatch) {
-         actions.push({ type: 'ADD_PROJECT', payload: { name: projectMatch[1], description: 'Инициировано OMNI Orchestrator' } });
-       }
+      const projectMatch = text.match(/(?:проект|project)\s*["']([^"']+)["']/i);
+      if (projectMatch) {
+        actions.push({ type: 'ADD_PROJECT', payload: { name: projectMatch[1], description: 'Инициировано AI-ассистентом' } });
+      }
     }
 
     return actions;
   };
 
+  const extractOmniText = (data) => {
+    if (!data) return '';
+
+    if (Array.isArray(data.outputs) && data.outputs.length > 0) {
+      const fromOutputs = data.outputs
+        .map((o) => o?.text)
+        .filter(Boolean)
+        .join('\n\n')
+        .trim();
+      if (fromOutputs) return fromOutputs;
+    }
+
+    if (Array.isArray(data.responses) && data.responses.length > 0) {
+      const fromResponses = data.responses
+        .map((r) => r?.text)
+        .filter(Boolean)
+        .join('\n\n')
+        .trim();
+      if (fromResponses) return fromResponses;
+    }
+
+    if (Array.isArray(data.reply) && data.reply.length > 0) {
+      const fromReply = data.reply
+        .map((r) => r?.text)
+        .filter(Boolean)
+        .join('\n\n')
+        .trim();
+      if (fromReply) return fromReply;
+    }
+
+    return '';
+  };
+
   const handleSend = async () => {
     if (!input.trim() || loading) return;
-    
+
     const userMsg = input.trim();
+    const requestPath = isGeminiMode ? '/api/gemini/chat' : isLocalModelMode ? '/api/ollama' : '/api/omni';
+    const requestBody = isGeminiMode
+      ? { text: userMsg, history: history.filter(m => ['user', 'assistant'].includes(m.role)) }
+      : isLocalModelMode
+        ? { prompt: userMsg, model: selectedFreeModel }
+        : { text: userMsg };
+
     setInput('');
-    
+
     dispatch({
       type: 'ADD_CERBER_MSG',
       payload: { role: 'user', content: userMsg, timestamp: new Date().toISOString() }
@@ -275,123 +369,193 @@ const OmniView = ({ state, dispatch }) => {
 
     setLoading(true);
     try {
-      const response = await fetch('/api/omni', {
+      const response = await fetch(requestPath, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: userMsg })
+        body: JSON.stringify(requestBody)
       });
 
       const data = await response.json();
-      let aiText = "Извините, ядро OMNI не ответило.";
-      
+      let aiText = isGeminiMode
+        ? 'Gemini не вернул ответ.'
+        : isLocalModelMode
+          ? 'Локальная модель не вернула текст.'
+          : 'Извините, ядро OMNI не ответило.';
+
       if (response.ok) {
-        aiText = data.responses?.[0]?.text || data.reply?.[0]?.text || JSON.stringify(data);
+        aiText = isGeminiMode
+          ? (data.response || '').trim() || aiText
+          : isLocalModelMode
+            ? (data.response || '').trim() || aiText
+            : extractOmniText(data) || JSON.stringify(data);
       } else if (data.error) {
-        aiText = `Ошибка ядра: ${data.error.message || JSON.stringify(data.error)}`;
+        const errorText = typeof data.error === 'string'
+         ? data.error
+         : data.error.message || JSON.stringify(data.error);
+        const errorDetails = data.message ? ` — ${data.message}` : '';
+        aiText = isGeminiMode
+         ? `Ошибка Gemini: ${errorText}${errorDetails}`
+         : isLocalModelMode
+           ? `Ошибка локальной модели: ${errorText}${errorDetails}`
+           : `Ошибка ядра: ${errorText}`;
       }
 
       dispatch({
         type: 'ADD_CERBER_MSG',
-        payload: { 
-          role: 'assistant', 
-          content: aiText, 
-          timestamp: new Date().toISOString(),
-          actions: parseActions(aiText) 
+        payload: {
+         role: 'assistant',
+         content: aiText,
+         timestamp: new Date().toISOString(),
+         actions: parseActions(aiText),
+         provider: isGeminiMode ? 'gemini' : isLocalModelMode ? 'ollama' : 'omni',
+         model: isGeminiMode ? (data.model || 'gemini') : isLocalModelMode ? selectedFreeModel : 'omni-core'
         }
       });
-    } catch (err) {
+    } catch {
       dispatch({
         type: 'ADD_CERBER_MSG',
-        payload: { role: 'system', content: 'Ошибка связи с ядром OMNI. Проверьте соединение.', timestamp: new Date().toISOString() }
+        payload: {
+         role: 'system',
+         content: isGeminiMode
+           ? 'Ошибка связи с Gemini. Проверьте API Key или авторизацию Google.'
+           : isLocalModelMode
+             ? 'Ошибка связи с локальной моделью. Проверьте, что Ollama запущен.'
+             : 'Ошибка связи с ядром OMNI. Проверьте соединение.',
+         timestamp: new Date().toISOString()
+        }
       });
     } finally {
       setLoading(false);
     }
   };
 
-  const executeAction = (action, idx) => {
+  const executeAction = (action) => {
     dispatch(action);
-    // Mark action as executed in UI (simple alert for now)
     alert(`Выполнено: ${action.type === 'ADD_ITEM' ? 'Задача создана' : 'Проект создан'}`);
   };
 
   return (
     <div className="flex flex-col h-[calc(100vh-12rem)] animate-in fade-in duration-500">
-      <div className="bg-theme-panel border-b-0 border border-theme-border rounded-t-2xl p-4 flex items-center justify-between shadow-sm">
-         <h3 className="text-lg font-serif font-bold text-theme-text flex items-center gap-2">
-          <Bot className="text-theme-accent" size={20} /> Личный ассистент
+      <div className="bg-theme-panel border-b-0 border border-theme-border rounded-t-2xl p-4 flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between shadow-sm">
+        <h3 className="text-lg font-serif font-bold text-theme-text flex items-center gap-2">
+         <Bot className="text-theme-accent" size={20} /> Личный ассистент
         </h3>
-        <div className="flex items-center gap-4">
-          <span className="hidden sm:inline text-[10px] font-mono text-theme-muted uppercase tracking-tighter">Mind Extraction Active</span>
-          <span className="text-xs font-mono text-theme-accent bg-theme-panel px-2 py-1 rounded">MIND_LINK: ESTABLISHED</span>
+        <div className="flex flex-col sm:flex-row sm:flex-wrap items-stretch sm:items-center gap-2">
+         <select
+           value={assistantProvider}
+           onChange={(e) => {
+             updateAssistantSettings({ assistantProvider: e.target.value });
+             if (e.target.value === 'ollama') {
+               loadFreeModels();
+             }
+           }}
+           className="bg-theme-bg border border-theme-border rounded-xl px-3 py-2 text-xs text-theme-text focus:outline-none"
+         >
+           <option value="omni">OMNI Core</option>
+           <option value="gemini">Google Gemini</option>
+           <option value="ollama">Бесплатные локальные модели</option>
+         </select>
+         {isLocalModelMode && (
+           <>
+             <select
+               value={selectedFreeModel}
+               onChange={(e) => updateAssistantSettings({ freeTextModel: e.target.value })}
+               className="bg-theme-bg border border-theme-border rounded-xl px-3 py-2 text-xs text-theme-text focus:outline-none"
+             >
+               {freeModelOptions.map((model) => (
+                 <option key={model.value} value={model.value}>{model.label}</option>
+               ))}
+             </select>
+             <button
+               onClick={loadFreeModels}
+               className="px-3 py-2 rounded-xl border border-theme-border text-xs text-theme-text hover:bg-theme-bg transition-all"
+               disabled={freeModelsLoading}
+             >
+               {freeModelsLoading ? 'Обновляю модели...' : 'Обновить модели'}
+             </button>
+           </>
+         )}
+         <span className="text-xs font-mono text-theme-accent bg-theme-panel px-2 py-1 rounded">
+           {isLocalModelMode ? `LOCAL MODEL: ${selectedFreeModel}` : 'MIND_LINK: ESTABLISHED'}
+         </span>
         </div>
       </div>
 
       <div className="flex-1 bg-theme-bg border-l border-r border-theme-border overflow-y-auto p-6 space-y-6 custom-scrollbar">
+        {isLocalModelMode && freeModelsError && (
+         <div className="bg-amber-500/10 border border-amber-500/20 text-amber-600 rounded-2xl px-4 py-3 text-sm">
+           {freeModelsError}
+         </div>
+        )}
         {history.length === 0 ? (
-          <div className="h-full flex flex-col items-center justify-center opacity-50 text-center">
-            <Bot size={64} className="text-theme-accent mb-4" />
-            <p className="text-theme-muted max-w-md italic font-serif text-lg">«Расскажите мне о ваших планах, и я превращу их в структуру.»</p>
-          </div>
+         <div className="h-full flex flex-col items-center justify-center opacity-50 text-center">
+           <Bot size={64} className="text-theme-accent mb-4" />
+           <p className="text-theme-muted max-w-md italic font-serif text-lg">
+             {isLocalModelMode
+               ? '«Выберите бесплатную локальную модель и задайте ей вопрос. Всё работает через Ollama.»'
+               : '«Расскажите мне о ваших планах, и я превращу их в структуру.»'}
+           </p>
+         </div>
         ) : (
-          history.map((msg, idx) => (
-            <div key={idx} className={`flex flex-col ${msg.role === 'user' ? 'items-end' : 'items-start'}`}>
-              <div className={`
-                max-w-[80%] rounded-2xl px-5 py-3 
-                ${msg.role === 'user' 
-                  ? 'bg-theme-text text-theme-bg rounded-tr-sm shadow-sm' 
-                  : msg.role === 'system'
-                    ? 'bg-red-500/10 text-red-500 border border-red-500/20 rounded-tl-sm'
-                    : 'bg-theme-panel text-theme-text border border-theme-border rounded-tl-sm shadow-sm'}
-              `}>
-                <div className="text-xs opacity-50 mb-1 flex items-center gap-1">
-                  {msg.role === 'assistant' && <Bot size={12} />}
-                  {msg.role === 'assistant' ? 'АССИСТЕНТ' : msg.role.toUpperCase()}
-                </div>
-                <div className="whitespace-pre-wrap">{msg.content}</div>
-                
-                {/* Mind Extractor Actions */}
-                {msg.actions && msg.actions.length > 0 && (
-                  <div className="mt-4 pt-3 border-t border-theme-border flex flex-wrap gap-2">
-                    {msg.actions.map((action, aIdx) => (
-                      <button 
-                        key={aIdx}
-                        onClick={() => executeAction(action, idx)}
-                        className="bg-theme-panel hover:bg-theme-bg border border-theme-accent/30 text-theme-accent text-xs font-bold py-2 px-3 rounded-lg transition-all flex items-center gap-2 shadow-sm"
-                      >
-                        <Plus size={14} /> Выполнить: {action.payload.title || action.payload.name}
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </div>
-          ))
+         history.map((msg, idx) => (
+           <div key={idx} className={`flex flex-col ${msg.role === 'user' ? 'items-end' : 'items-start'}`}>
+             <div className={`
+               max-w-[80%] rounded-2xl px-5 py-3
+               ${msg.role === 'user'
+                 ? 'bg-theme-text text-theme-bg rounded-tr-sm shadow-sm'
+                 : msg.role === 'system'
+                   ? 'bg-red-500/10 text-red-500 border border-red-500/20 rounded-tl-sm'
+                   : 'bg-theme-panel text-theme-text border border-theme-border rounded-tl-sm shadow-sm'}
+             `}>
+               <div className="text-xs opacity-50 mb-1 flex items-center gap-1">
+                 {msg.role === 'assistant' && <Bot size={12} />}
+                 {msg.role === 'assistant'
+                   ? (msg.provider === 'ollama' ? `FREE MODEL · ${msg.model}` : msg.provider === 'gemini' ? `GEMINI · ${msg.model || 'gemini'}` : 'АССИСТЕНТ')
+                   : msg.role.toUpperCase()}
+               </div>
+               <div className="whitespace-pre-wrap">{msg.content}</div>
+
+               {msg.actions && msg.actions.length > 0 && (
+                 <div className="mt-4 pt-3 border-t border-theme-border flex flex-wrap gap-2">
+                   {msg.actions.map((action, aIdx) => (
+                     <button
+                       key={aIdx}
+                       onClick={() => executeAction(action)}
+                       className="bg-theme-panel hover:bg-theme-bg border border-theme-accent/30 text-theme-accent text-xs font-bold py-2 px-3 rounded-lg transition-all flex items-center gap-2 shadow-sm"
+                     >
+                       <Plus size={14} /> Выполнить: {action.payload.title || action.payload.name}
+                     </button>
+                   ))}
+                 </div>
+               )}
+             </div>
+           </div>
+         ))
         )}
         {loading && (
-          <div className="flex justify-start">
-            <div className="bg-theme-panel text-theme-muted border border-theme-border rounded-2xl rounded-tl-sm px-5 py-3 animate-pulse shadow-sm">
-              Анализ запроса...
-            </div>
-          </div>
+         <div className="flex justify-start">
+           <div className="bg-theme-panel text-theme-muted border border-theme-border rounded-2xl rounded-tl-sm px-5 py-3 animate-pulse shadow-sm">
+             {isLocalModelMode ? 'Локальная модель отвечает...' : isGeminiMode ? 'Gemini думает...' : 'Анализ запроса...'}
+           </div>
+         </div>
         )}
       </div>
 
       <div className="bg-theme-panel border border-t-0 border-theme-border rounded-b-2xl p-4 flex gap-3 shadow-sm">
-        <input 
-          type="text" 
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && handleSend()}
-          placeholder="Опишите вашу идею или задачу..."
-          className="flex-1 bg-theme-bg border border-theme-border rounded-xl px-4 py-3 text-theme-text focus:outline-none focus:border-theme-accent transition-all shadow-inner"
+        <input
+         type="text"
+         value={input}
+         onChange={(e) => setInput(e.target.value)}
+         onKeyDown={(e) => e.key === 'Enter' && handleSend()}
+         placeholder={isLocalModelMode ? 'Спросите локальную модель...' : isGeminiMode ? 'Спросите Google Gemini...' : 'Опишите вашу идею или задачу...'}
+         className="flex-1 bg-theme-bg border border-theme-border rounded-xl px-4 py-3 text-theme-text focus:outline-none focus:border-theme-accent transition-all shadow-inner"
         />
-        <button 
-          onClick={handleSend}
-          disabled={loading || !input.trim()}
-          className="bg-theme-text hover:bg-theme-text/90 disabled:opacity-50 text-theme-bg p-3 rounded-xl transition-all shadow-md flex items-center justify-center"
+        <button
+         onClick={handleSend}
+         disabled={loading || !input.trim()}
+         className="bg-theme-text hover:bg-theme-text/90 disabled:opacity-50 text-theme-bg p-3 rounded-xl transition-all shadow-md flex items-center justify-center"
         >
-          <Send size={20} />
+         <Send size={20} />
         </button>
       </div>
     </div>
