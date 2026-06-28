@@ -3,6 +3,7 @@ import LockScreen from './components/LockScreen';
 import VaultDashboard from './components/VaultDashboard';
 import ShaderBG from './components/ShaderBG';
 import { encryptData, decryptData, saveVault, loadVault, saveVaultToFile } from './lib/crypto';
+import { useAuth } from './hooks/useAuth';
 import { AnimatePresence, motion } from 'framer-motion';
 
 const emptyState = {
@@ -10,7 +11,14 @@ const emptyState = {
   projects: [],
   mindmaps: [],
   gallery: [],
-  settings: { theme: 'dark', color: '#7c3aed', autoLock: true, lockTimeout: 15 }
+  settings: {
+    theme: 'dark',
+    color: '#7c3aed',
+    autoLock: true,
+    lockTimeout: 15,
+    assistantProvider: 'omni',
+    freeTextModel: 'llama3.2:3b'
+  }
 };
 
 const appReducer = (state, action) => {
@@ -49,12 +57,15 @@ const appReducer = (state, action) => {
 };
 
 function App() {
-  const [locked, setLocked] = useState(true);
+  const [localLock, setLocalLock] = useState(true);
   const [mode, setMode] = useState('create');
   const [hasVault, setHasVault] = useState(false);
   const [error, setError] = useState('');
   const [state, dispatch] = useReducer(appReducer, emptyState);
   const [password, setPassword] = useState('');
+  const auth = useAuth();
+
+  const isLocked = !auth.isLoading && !auth.isAuthenticated && localLock;
 
   // Check if vault exists on mount
   useEffect(() => {
@@ -68,7 +79,7 @@ function App() {
 
   // Save changes to encrypted storage automatically
   useEffect(() => {
-    if (!locked && password) {
+    if (!isLocked && password) {
       const save = async () => {
         try {
           const payload = await encryptData(state, password);
@@ -80,7 +91,18 @@ function App() {
       };
       save();
     }
-  }, [state, locked, password]);
+  }, [state, isLocked, password]);
+
+  // Auto-lock the vault after a period of inactivity
+  useEffect(() => {
+    if (isLocked || !state.settings?.autoLock) return undefined;
+    const timeout = state.settings?.lockTimeout || 15;
+    const timer = window.setTimeout(() => {
+      handleLock();
+    }, timeout * 60 * 1000);
+
+    return () => window.clearTimeout(timer);
+  }, [isLocked, state.settings?.autoLock, state.settings?.lockTimeout, state]);
 
   const handleCreate = async (pw) => {
     try {
@@ -89,7 +111,7 @@ function App() {
       setPassword(pw);
       dispatch({ type: 'LOAD', payload: emptyState });
       setHasVault(true);
-      setLocked(false);
+      setLocalLock(false);
       setError('');
     } catch (e) {
       setError('Ошибка при создании хранилища');
@@ -104,7 +126,7 @@ function App() {
       const data = await decryptData(encryptedData, pw);
       dispatch({ type: 'LOAD', payload: data });
       setPassword(pw);
-      setLocked(false);
+      setLocalLock(false);
       setError('');
     } catch (e) {
       setError('Неверный пароль или данные повреждены');
@@ -116,15 +138,23 @@ function App() {
     const reader = new FileReader();
     reader.onload = async (e) => {
       try {
-        const content = e.target.result;
-        // Basic validation before attempting unlock
-        if (!content.startsWith('BASE1:')) throw new Error('Invalid format');
-        await saveVault(content);
+        const content = (e.target.result || '').toString().trim();
+        const parts = content.split(':');
+        if (parts[0] !== 'BASE1' || parts.length !== 4) {
+          throw new Error('Invalid format');
+        }
+
+        const saved = await saveVault(content);
+        if (!saved) {
+          throw new Error('Не удалось сохранить файл базы');
+        }
+
         setHasVault(true);
         setMode('unlock');
         setError('');
         alert('Файл базы успешно загружен. Введите пароль для разблокировки.');
       } catch (e) {
+        console.error(e);
         setError('Неверный формат файла базы');
       }
     };
@@ -132,7 +162,8 @@ function App() {
   };
 
   const handleLock = () => {
-    setLocked(true);
+    auth.logout();
+    setLocalLock(true);
     setPassword('');
     dispatch({ type: 'LOAD', payload: emptyState });
   };
@@ -149,13 +180,18 @@ function App() {
     }
   };
 
+  const showLoading = auth.isLoading;
 
   return (
     <div data-theme={state.settings?.theme || 'liwood'} className="min-h-screen bg-theme-bg font-sans text-theme-text overflow-hidden relative transition-colors duration-500">
       <ShaderBG type="noise" color={state.settings?.theme === 'cyberpunk' ? '#06B6D4' : state.settings?.theme === 'dark' ? '#CBA57A' : '#B89B72'} opacity={0.15} />
       
       <AnimatePresence mode="wait">
-        {locked ? (
+        {showLoading ? (
+          <div key="loader" className="fixed inset-0 flex items-center justify-center z-50">
+            <div className="w-16 h-16 border-4 border-theme-accent border-t-transparent rounded-full animate-spin"></div>
+          </div>
+        ) : isLocked ? (
           <LockScreen 
             key="lock"
             mode={mode} 
@@ -163,12 +199,15 @@ function App() {
             onUnlock={handleUnlock} 
             onCreate={handleCreate} 
             onOpenFile={handleOpenFile}
+            onLogin={auth.login}
             hasVault={hasVault}
-            error={error}
+            authConfigured={auth.configured}
+            error={error || auth.error}
           />
         ) : (
           <VaultDashboard 
             key="dashboard"
+            auth={auth}
             state={state} 
             dispatch={dispatch} 
             onLock={handleLock}
