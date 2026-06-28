@@ -1,6 +1,8 @@
+import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import { GoogleAuth } from 'google-auth-library';
+import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 
@@ -9,6 +11,208 @@ const port = 3001;
 
 app.use(cors());
 app.use(express.json());
+
+// ==========================================================================
+// OAuth Web Flow для интеграции нейросетей (Google Gemini, GitHub Copilot, Claude)
+// ==========================================================================
+
+// Конфигурация провайдеров. Client ID / Secret берутся из .env (см. .env.example).
+const OAUTH_PROVIDERS = {
+  gemini: {
+    name: 'Google Gemini',
+    authUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
+    tokenUrl: 'https://oauth2.googleapis.com/token',
+    userInfoUrl: 'https://www.googleapis.com/oauth2/v2/userinfo',
+    clientId: process.env.GOOGLE_CLIENT_ID,
+    clientSecret: process.env.GOOGLE_CLIENT_SECRET,
+    scope: 'openid email profile https://www.googleapis.com/auth/generative-language.retriever',
+    extraAuthParams: { access_type: 'offline', prompt: 'consent' },
+    accountField: (user) => user.email || user.name,
+  },
+  copilot: {
+    name: 'GitHub Copilot',
+    authUrl: 'https://github.com/login/oauth/authorize',
+    tokenUrl: 'https://github.com/login/oauth/access_token',
+    userInfoUrl: 'https://api.github.com/user',
+    clientId: process.env.GITHUB_CLIENT_ID,
+    clientSecret: process.env.GITHUB_CLIENT_SECRET,
+    scope: 'read:user copilot',
+    extraAuthParams: {},
+    accountField: (user) => user.login || user.name,
+  },
+  claude: {
+    name: 'Claude Code',
+    authUrl: process.env.ANTHROPIC_AUTH_URL || 'https://claude.ai/oauth/authorize',
+    tokenUrl: process.env.ANTHROPIC_TOKEN_URL || 'https://console.anthropic.com/v1/oauth/token',
+    userInfoUrl: null,
+    clientId: process.env.ANTHROPIC_CLIENT_ID,
+    clientSecret: process.env.ANTHROPIC_CLIENT_SECRET,
+    scope: 'org:create_api_key user:profile user:inference',
+    extraAuthParams: {},
+    accountField: () => 'Claude account',
+  },
+};
+
+// Хранилище токенов на бэкенде (персистится локально, в git не попадает).
+const TOKENS_FILE = path.join(process.cwd(), '.oauth-tokens.json');
+
+const loadTokens = () => {
+  try {
+    return JSON.parse(fs.readFileSync(TOKENS_FILE, 'utf8'));
+  } catch {
+    return {};
+  }
+};
+
+const saveTokens = (tokens) => {
+  try {
+    fs.writeFileSync(TOKENS_FILE, JSON.stringify(tokens, null, 2));
+  } catch (e) {
+    console.error('Не удалось сохранить токены OAuth:', e.message);
+  }
+};
+
+// Временное хранилище CSRF-state между start и callback (живёт в памяти).
+const oauthStates = new Map();
+
+// HTML-страница, которая возвращается в popup после callback: шлёт сообщение
+// родительскому окну и закрывается.
+const popupResponse = (payload) => `<!doctype html>
+<html><head><meta charset="utf-8"><title>OAuth</title></head>
+<body style="font-family:system-ui;background:#1a1a1a;color:#eee;display:flex;align-items:center;justify-content:center;height:100vh;margin:0">
+<div style="text-align:center">
+  <p style="font-size:18px">${payload.ok ? '✅ Авторизация успешна' : '❌ Ошибка авторизации'}</p>
+  <p style="opacity:.6;font-size:13px">${payload.ok ? 'Окно закроется автоматически…' : (payload.error || '')}</p>
+</div>
+<script>
+  (function(){
+    var msg = ${JSON.stringify({ source: 'omni-oauth', ...payload })};
+    if (window.opener) { window.opener.postMessage(msg, '*'); }
+    setTimeout(function(){ window.close(); }, ${payload.ok ? 800 : 3000});
+  })();
+</script>
+</body></html>`;
+
+// Инициация OAuth: строим authorize URL и редиректим в окно провайдера.
+app.get('/api/auth/:provider/start', (req, res) => {
+  const provider = OAUTH_PROVIDERS[req.params.provider];
+  if (!provider) return res.status(404).send(popupResponse({ ok: false, error: 'Неизвестный провайдер' }));
+
+  if (!provider.clientId || !provider.clientSecret) {
+    return res.send(popupResponse({
+      ok: false,
+      provider: req.params.provider,
+      error: `${provider.name} не настроен. Задайте Client ID/Secret в .env`,
+    }));
+  }
+
+  // origin фронтенда нужен, чтобы redirect_uri вёл обратно на тот же ориджин
+  // (через Vite proxy /api) и popup мог сделать postMessage в opener.
+  const origin = req.query.origin || `${req.protocol}://${req.get('host')}`;
+  const redirectUri = `${origin}/api/auth/${req.params.provider}/callback`;
+  const state = crypto.randomBytes(16).toString('hex');
+  oauthStates.set(state, { provider: req.params.provider, redirectUri, ts: Date.now() });
+
+  const params = new URLSearchParams({
+    client_id: provider.clientId,
+    redirect_uri: redirectUri,
+    response_type: 'code',
+    scope: provider.scope,
+    state,
+    ...provider.extraAuthParams,
+  });
+
+  res.redirect(`${provider.authUrl}?${params.toString()}`);
+});
+
+// Callback: обмениваем код на токен, получаем данные аккаунта, сохраняем.
+app.get('/api/auth/:provider/callback', async (req, res) => {
+  const providerKey = req.params.provider;
+  const provider = OAUTH_PROVIDERS[providerKey];
+  if (!provider) return res.status(404).send(popupResponse({ ok: false, error: 'Неизвестный провайдер' }));
+
+  const { code, state, error: providerError } = req.query;
+  if (providerError) return res.send(popupResponse({ ok: false, provider: providerKey, error: String(providerError) }));
+
+  const stored = oauthStates.get(state);
+  if (!stored || stored.provider !== providerKey) {
+    return res.send(popupResponse({ ok: false, provider: providerKey, error: 'Неверный или истёкший state (CSRF)' }));
+  }
+  oauthStates.delete(state);
+
+  try {
+    // 1. Обмен authorization code на access token
+    const tokenResp = await fetch(provider.tokenUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Accept': 'application/json' },
+      body: new URLSearchParams({
+        client_id: provider.clientId,
+        client_secret: provider.clientSecret,
+        code: String(code),
+        redirect_uri: stored.redirectUri,
+        grant_type: 'authorization_code',
+      }).toString(),
+    });
+    const tokenData = await tokenResp.json();
+    if (!tokenResp.ok || tokenData.error) {
+      throw new Error(tokenData.error_description || tokenData.error || 'Не удалось обменять код на токен');
+    }
+
+    // 2. Получаем информацию об аккаунте (если провайдер это поддерживает)
+    let account = provider.name;
+    if (provider.userInfoUrl) {
+      try {
+        const userResp = await fetch(provider.userInfoUrl, {
+          headers: { Authorization: `Bearer ${tokenData.access_token}`, 'User-Agent': 'OMNI-TODO', Accept: 'application/json' },
+        });
+        if (userResp.ok) account = provider.accountField(await userResp.json()) || account;
+      } catch { /* информация об аккаунте необязательна */ }
+    }
+
+    // 3. Сохраняем токены на бэкенде
+    const tokens = loadTokens();
+    tokens[providerKey] = {
+      access_token: tokenData.access_token,
+      refresh_token: tokenData.refresh_token || null,
+      expires_in: tokenData.expires_in || null,
+      account,
+      connectedAt: new Date().toISOString(),
+    };
+    saveTokens(tokens);
+
+    res.send(popupResponse({ ok: true, provider: providerKey, account }));
+  } catch (e) {
+    console.error(`OAuth callback error (${providerKey}):`, e);
+    res.send(popupResponse({ ok: false, provider: providerKey, error: e.message }));
+  }
+});
+
+// Статус подключений всех провайдеров (без выдачи самих токенов наружу).
+app.get('/api/auth/status', (req, res) => {
+  const tokens = loadTokens();
+  const status = {};
+  for (const key of Object.keys(OAUTH_PROVIDERS)) {
+    const p = OAUTH_PROVIDERS[key];
+    status[key] = {
+      name: p.name,
+      configured: Boolean(p.clientId && p.clientSecret),
+      connected: Boolean(tokens[key]?.access_token),
+      account: tokens[key]?.account || null,
+      connectedAt: tokens[key]?.connectedAt || null,
+    };
+  }
+  res.json(status);
+});
+
+// Отключение провайдера: удаляем сохранённый токен.
+app.post('/api/auth/:provider/disconnect', (req, res) => {
+  const providerKey = req.params.provider;
+  if (!OAUTH_PROVIDERS[providerKey]) return res.status(404).json({ error: 'Неизвестный провайдер' });
+  const tokens = loadTokens();
+  delete tokens[providerKey];
+  saveTokens(tokens);
+  res.json({ ok: true });
+});
 
 // Инициализация Google Auth
 const auth = new GoogleAuth({

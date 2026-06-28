@@ -677,6 +677,150 @@ const GalleryView = ({ state, dispatch }) => {
   );
 };
 
+// ==== AI INTEGRATIONS (OAuth Web Flow) ====
+const AI_PROVIDERS = [
+  { key: 'gemini', name: 'Google Gemini', desc: 'Подключите аккаунт Google для доступа к моделям Gemini.', accent: '#4285F4', initial: 'G' },
+  { key: 'copilot', name: 'GitHub Copilot', desc: 'Авторизуйтесь через GitHub для использования Copilot.', accent: '#6e5494', initial: '⌥' },
+  { key: 'claude', name: 'Claude Code', desc: 'Подключите аккаунт Anthropic для работы с Claude.', accent: '#D97757', initial: 'C' },
+];
+
+const IntegrationsPanel = () => {
+  const [status, setStatus] = useState(null);
+  const [busy, setBusy] = useState(null);
+  const [error, setError] = useState('');
+
+  const fetchStatus = React.useCallback(async () => {
+    try {
+      const res = await fetch('/api/auth/status');
+      if (!res.ok) throw new Error('Сервер интеграций недоступен');
+      setStatus(await res.json());
+      setError('');
+    } catch (e) {
+      setError(e.message);
+      setStatus(null);
+    }
+  }, []);
+
+  React.useEffect(() => { fetchStatus(); }, [fetchStatus]);
+
+  // Слушаем сообщение из popup после завершения OAuth-флоу
+  React.useEffect(() => {
+    const onMessage = (event) => {
+      const data = event.data;
+      if (!data || data.source !== 'omni-oauth') return;
+      setBusy(null);
+      if (data.ok) {
+        fetchStatus();
+      } else {
+        setError(data.error || 'Ошибка авторизации');
+      }
+    };
+    window.addEventListener('message', onMessage);
+    return () => window.removeEventListener('message', onMessage);
+  }, [fetchStatus]);
+
+  const handleAuthorize = (key) => {
+    setError('');
+    setBusy(key);
+    const origin = window.location.origin;
+    const url = `/api/auth/${key}/start?origin=${encodeURIComponent(origin)}`;
+    const popup = window.open(url, 'omni-oauth', 'width=600,height=720,menubar=no,toolbar=no');
+    // Если popup закрыли вручную — снимаем индикатор загрузки
+    const timer = setInterval(() => {
+      if (popup && popup.closed) {
+        clearInterval(timer);
+        setBusy((b) => (b === key ? null : b));
+        fetchStatus();
+      }
+    }, 600);
+  };
+
+  const handleDisconnect = async (key) => {
+    setBusy(key);
+    try {
+      await fetch(`/api/auth/${key}/disconnect`, { method: 'POST' });
+      await fetchStatus();
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <div className="glass-panel p-6 sm:p-8">
+      <h3 className="text-xl font-serif font-bold text-theme-text mb-6 flex items-center gap-2 border-b border-theme-border pb-4">
+        <KeyRound className="text-theme-accent" /> Интеграции нейросетей
+      </h3>
+
+      {error && (
+        <div className="mb-4 flex items-center gap-2 text-sm text-red-500 bg-red-500/10 border border-red-500/20 rounded-lg px-4 py-2.5">
+          <XCircle size={16} /> {error}
+        </div>
+      )}
+
+      <div className="space-y-4">
+        {AI_PROVIDERS.map((p) => {
+          const s = status?.[p.key];
+          const connected = s?.connected;
+          const configured = s?.configured;
+          const isBusy = busy === p.key;
+          return (
+            <div key={p.key} className="flex items-center justify-between gap-4 rounded-xl border border-theme-border bg-theme-panel/40 p-4">
+              <div className="flex items-center gap-4 min-w-0">
+                <div
+                  className="flex h-11 w-11 shrink-0 items-center justify-center rounded-lg text-lg font-bold text-white shadow-sm"
+                  style={{ backgroundColor: p.accent }}
+                >
+                  {p.initial}
+                </div>
+                <div className="min-w-0">
+                  <div className="flex items-center gap-2">
+                    <p className="font-medium text-theme-text truncate">{p.name}</p>
+                    {connected ? (
+                      <span className="inline-flex items-center gap-1 text-[10px] bg-green-100 text-green-700 px-2 py-0.5 rounded uppercase font-medium">
+                        <CheckCircle size={11} /> Подключено
+                      </span>
+                    ) : !configured ? (
+                      <span className="text-[10px] bg-theme-text/10 text-theme-muted px-2 py-0.5 rounded uppercase font-medium">Не настроено</span>
+                    ) : (
+                      <span className="text-[10px] bg-theme-text/10 text-theme-muted px-2 py-0.5 rounded uppercase font-medium">Не подключено</span>
+                    )}
+                  </div>
+                  <p className="text-sm text-theme-muted mt-0.5 truncate">
+                    {connected && s?.account ? `Аккаунт: ${s.account}` : p.desc}
+                  </p>
+                </div>
+              </div>
+
+              {connected ? (
+                <button
+                  onClick={() => handleDisconnect(p.key)}
+                  disabled={isBusy}
+                  className="input-field text-sm px-4 py-2 shrink-0 hover:bg-theme-panel/10 transition-colors disabled:opacity-50 flex items-center gap-2"
+                >
+                  {isBusy ? <Loader2 size={15} className="animate-spin" /> : <LogOut size={15} />} Отключить
+                </button>
+              ) : (
+                <button
+                  onClick={() => handleAuthorize(p.key)}
+                  disabled={isBusy || !configured}
+                  title={!configured ? 'Задайте Client ID/Secret в .env' : ''}
+                  className="btn-primary text-sm px-4 py-2 shrink-0 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+                >
+                  {isBusy ? <Loader2 size={15} className="animate-spin" /> : <KeyRound size={15} />} Авторизоваться
+                </button>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      <p className="text-xs text-theme-muted mt-4">
+        Авторизация выполняется через защищённый OAuth-поток в отдельном окне. Учётные данные провайдеров задаются в файле <code className="font-mono">.env</code> (см. <code className="font-mono">.env.example</code>).
+      </p>
+    </div>
+  );
+};
+
 // ==== SETTINGS VIEW ====
 const SettingsView = ({ state, dispatch, onExportVault, onLock }) => {
   const handleExportJSON = () => {
@@ -928,6 +1072,8 @@ const SettingsView = ({ state, dispatch, onExportVault, onLock }) => {
           </div>
         </div>
       </div>
+
+      <IntegrationsPanel />
 
       <div className="glass-panel p-6 sm:p-8">
       <section>
