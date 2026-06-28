@@ -1257,6 +1257,238 @@ app.post('/api/github-models/responses', async (req, res) => {
   }
 });
 
+// ==========================================================================
+// AnyType Integration: Local-first vault backend + data sync
+// Endpoints under /api/anytype/* for authenticating and syncing with AnyType
+// ==========================================================================
+
+const ANYTYPE_API_BASE = 'http://localhost:31009/api';
+
+const proxyAnytypeRequest = async (method, path, token, body = null) => {
+  try {
+    const url = `${ANYTYPE_API_BASE}${path}`;
+    const options = {
+      method,
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`
+      }
+    };
+    if (body) options.body = JSON.stringify(body);
+
+    const response = await fetch(url, options);
+    if (!response.ok) {
+      throw new Error(`AnyType API error: ${response.statusText}`);
+    }
+    return await response.json();
+  } catch (error) {
+    throw new Error(`AnyType proxy error: ${error.message}`);
+  }
+};
+
+app.post('/api/anytype/check', async (req, res) => {
+  try {
+    const response = await fetch(`${ANYTYPE_API_BASE}/v1/spaces`, {
+      method: 'GET',
+      headers: { 'Content-Type': 'application/json' }
+    });
+    return res.json({ available: response.status < 400 });
+  } catch (error) {
+    return res.json({ available: false, error: error.message });
+  }
+});
+
+app.post('/api/anytype/challenge', async (req, res) => {
+  try {
+    const { appName = 'OMNI-TODO' } = req.body || {};
+    const response = await fetch(`${ANYTYPE_API_BASE}/v1/auth/challenges`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ appName })
+    });
+
+    if (!response.ok) {
+      return res.status(response.status).json({ ok: false, error: response.statusText });
+    }
+
+    const data = await response.json();
+    return res.json({ ok: true, challengeId: data.challenge_id });
+  } catch (error) {
+    return res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+app.post('/api/anytype/exchange-code', async (req, res) => {
+  try {
+    const { challengeId, code } = req.body || {};
+    if (!challengeId || !code) {
+      return res.status(400).json({ ok: false, error: 'Missing challengeId or code' });
+    }
+
+    const response = await fetch(`${ANYTYPE_API_BASE}/v1/auth/api_keys`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        challenge_id: challengeId,
+        code: String(code).padStart(4, '0')
+      })
+    });
+
+    if (!response.ok) {
+      return res.status(response.status).json({ ok: false, error: response.statusText });
+    }
+
+    const data = await response.json();
+    if (!req.session) req.session = {};
+    req.session.anytypeAuth = { apiKey: data.api_key, connectedAt: new Date().toISOString() };
+    req.session.save();
+    return res.json({ ok: true, token: data.api_key });
+  } catch (error) {
+    return res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+app.get('/api/anytype/spaces', async (req, res) => {
+  try {
+    if (!req.session?.anytypeAuth?.apiKey) {
+      return res.status(401).json({ ok: false, error: 'Not authenticated with AnyType' });
+    }
+
+    const data = await proxyAnytypeRequest('GET', '/v1/spaces', req.session.anytypeAuth.apiKey);
+    return res.json({ ok: true, spaces: data.spaces || [] });
+  } catch (error) {
+    return res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+app.post('/api/anytype/vault/create', async (req, res) => {
+  try {
+    if (!req.session?.anytypeAuth?.apiKey) {
+      return res.status(401).json({ ok: false, error: 'Not authenticated with AnyType' });
+    }
+
+    const { spaceId, vaultData } = req.body || {};
+    if (!spaceId) {
+      return res.status(400).json({ ok: false, error: 'Missing spaceId' });
+    }
+
+    const vaultContent = JSON.stringify(vaultData || {}, null, 2);
+    const createData = {
+      name: `OMNI Vault - ${new Date().toLocaleDateString()}`,
+      type: 'note',
+      properties: { description: 'OMNI-TODO encrypted vault backup' },
+      body: vaultContent
+    };
+
+    const data = await proxyAnytypeRequest(
+      'POST',
+      `/v1/spaces/${spaceId}/objects`,
+      req.session.anytypeAuth.apiKey,
+      createData
+    );
+    return res.json({ ok: true, objectId: data.id });
+  } catch (error) {
+    return res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+app.patch('/api/anytype/vault/:objectId', async (req, res) => {
+  try {
+    if (!req.session?.anytypeAuth?.apiKey) {
+      return res.status(401).json({ ok: false, error: 'Not authenticated with AnyType' });
+    }
+
+    const { spaceId, vaultData } = req.body || {};
+    const { objectId } = req.params;
+
+    if (!spaceId) {
+      return res.status(400).json({ ok: false, error: 'Missing spaceId' });
+    }
+
+    const vaultContent = JSON.stringify(vaultData || {}, null, 2);
+    await proxyAnytypeRequest(
+      'PATCH',
+      `/v1/spaces/${spaceId}/objects/${objectId}`,
+      req.session.anytypeAuth.apiKey,
+      { body: vaultContent }
+    );
+    return res.json({ ok: true });
+  } catch (error) {
+    return res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+app.get('/api/anytype/vault/:spaceId/:objectId', async (req, res) => {
+  try {
+    if (!req.session?.anytypeAuth?.apiKey) {
+      return res.status(401).json({ ok: false, error: 'Not authenticated with AnyType' });
+    }
+
+    const { spaceId, objectId } = req.params;
+    const data = await proxyAnytypeRequest(
+      'GET',
+      `/v1/spaces/${spaceId}/objects/${objectId}`,
+      req.session.anytypeAuth.apiKey
+    );
+
+    const vaultData = data.body ? JSON.parse(data.body) : {};
+    return res.json({ ok: true, vaultData });
+  } catch (error) {
+    return res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+app.post('/api/anytype/sync-items', async (req, res) => {
+  try {
+    if (!req.session?.anytypeAuth?.apiKey) {
+      return res.status(401).json({ ok: false, error: 'Not authenticated with AnyType' });
+    }
+
+    const { spaceId, items } = req.body || {};
+    if (!spaceId || !Array.isArray(items)) {
+      return res.status(400).json({ ok: false, error: 'Missing spaceId or items' });
+    }
+
+    const results = [];
+    for (const item of items) {
+      try {
+        const createData = {
+          name: item.title || 'Untitled',
+          type: item.type === 'task' ? 'todo' : 'note',
+          properties: {
+            status: item.status || 'open',
+            priority: item.priority || 'medium',
+            created: item.created || new Date().toISOString()
+          },
+          body: item.description || ''
+        };
+
+        const data = await proxyAnytypeRequest(
+          'POST',
+          `/v1/spaces/${spaceId}/objects`,
+          req.session.anytypeAuth.apiKey,
+          createData
+        );
+        results.push({ itemId: item.id, anytypeId: data.id, success: true });
+      } catch (error) {
+        results.push({ itemId: item.id, success: false, error: error.message });
+      }
+    }
+
+    return res.json({ ok: true, results });
+  } catch (error) {
+    return res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+app.post('/api/anytype/disconnect', (req, res) => {
+  if (req.session) {
+    delete req.session.anytypeAuth;
+    req.session.save();
+  }
+  return res.json({ ok: true });
+});
+
 app.get(/.*/, (req, res) => {
   const __dirname = path.resolve();
   res.sendFile(path.join(__dirname, 'dist', 'index.html'));

@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Menu, X, Settings, Plus, Search, Trash2, Pin, Share2, GitBranch, Clock, LogOut, KeyRound, Bot, Send, Image as ImageIcon, Loader2, XCircle, Lock, Database, Download, Upload, Network, CheckCircle } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import MindmapView from './MindmapView';
+import AnytypePanel from './AnytypePanel';
 // ==== ELEGANT TITLE ====
 export const ElegantTitle = ({ children, className = '' }) => {
   return (
@@ -1469,6 +1470,8 @@ const SettingsView = ({ state, dispatch, onExportVault, onLock, vaultName, stora
         onSwitchDriveFile={onSwitchDriveFile}
         onDisconnectGoogle={onDisconnectGoogle}
       />
+
+      <AnytypePanel state={state} dispatch={dispatch} />
 
       <div className="glass-panel p-6 sm:p-8">
       <section>
