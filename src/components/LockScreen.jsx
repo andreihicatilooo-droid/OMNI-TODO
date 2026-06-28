@@ -1,8 +1,11 @@
-import React, { useState, useRef } from 'react';
-import { Lock, Shield, KeyRound, Eye, EyeOff, AlertTriangle, Upload, Unlock } from 'lucide-react';
+import { useState, useRef } from 'react';
+import { Lock, Shield, KeyRound, Eye, EyeOff, AlertTriangle, Upload, Unlock, FileText, RotateCcw, X, FilePlus2 } from 'lucide-react';
 import { motion } from 'framer-motion';
 
-const LockScreen = ({ mode, setMode, onUnlock, onCreate, onOpenFile, hasVault, error }) => {
+const LockScreen = ({
+  mode, setMode, onUnlock, onCreate, onPickFile, onOpenFile, onReopenLast, onForgetLast,
+  hasVault, supportsFS, pendingFileName, canReopen, error,
+}) => {
   const [pw, setPw] = useState('');
   const [pw2, setPw2] = useState('');
   const [show, setShow] = useState(false);
@@ -25,14 +28,17 @@ const LockScreen = ({ mode, setMode, onUnlock, onCreate, onOpenFile, hasVault, e
     }
   };
 
-  const pickFile = (e) => {
+  const pickFileFallback = (e) => {
     const file = e.target.files?.[0];
     if (file) onOpenFile(file);
     e.target.value = '';
   };
 
+  // В режиме разблокировки сначала нужно выбрать файл базы (для FS API).
+  const needsFileSelection = mode === 'unlock' && supportsFS && !pendingFileName;
+
   return (
-    <motion.div 
+    <motion.div
       initial={{ opacity: 0, y: 20 }}
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, y: -20 }}
@@ -49,75 +55,134 @@ const LockScreen = ({ mode, setMode, onUnlock, onCreate, onOpenFile, hasVault, e
           </h1>
           <p className="text-theme-muted text-sm text-center mt-2 italic font-serif leading-relaxed">
             {mode === 'create'
-              ? 'Придумайте мастер-пароль. Данные шифруются AES-256. Пароль нельзя восстановить!'
-              : 'Введите мастер-пароль для доступа к зашифрованным данным'}
+              ? 'Придумайте мастер-пароль. Файл базы шифруется AES-256. Пароль нельзя восстановить!'
+              : needsFileSelection
+                ? 'Выберите зашифрованный файл базы для входа'
+                : 'Введите мастер-пароль для доступа к выбранному файлу базы'}
           </p>
         </div>
 
-        <div className="space-y-4">
-          <div className="relative">
-            <KeyRound size={18} className="absolute left-3 top-3.5 text-theme-accent" />
-            <input
-              type={show ? 'text' : 'password'}
-              value={pw}
-              onChange={(e) => setPw(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && (mode === 'unlock' ? submit() : null)}
-              placeholder="Мастер-пароль"
-              className="w-full bg-theme-bg border border-theme-border rounded-lg pl-10 pr-10 py-3 text-theme-text placeholder-theme-muted/40 focus:outline-none focus:border-theme-accent focus:ring-1 focus:ring-theme-accent/20 transition-all shadow-sm"
-            />
-            <button onClick={() => setShow(!show)} className="absolute right-3 top-3 text-theme-muted hover:text-theme-text transition-colors">
-              {show ? <EyeOff size={18} /> : <Eye size={18} />}
-            </button>
+        {/* Выбранный/последний файл базы */}
+        {mode === 'unlock' && pendingFileName && (
+          <div className="mb-4 flex items-center justify-between gap-2 bg-theme-bg border border-theme-border rounded-lg px-3 py-2.5">
+            <div className="flex items-center gap-2 min-w-0">
+              <FileText size={16} className="text-theme-accent shrink-0" />
+              <span className="text-sm text-theme-text truncate">{pendingFileName}</span>
+            </div>
+            {canReopen && onForgetLast && (
+              <button onClick={onForgetLast} title="Забыть файл" className="text-theme-muted hover:text-theme-text transition-colors shrink-0">
+                <X size={15} />
+              </button>
+            )}
           </div>
+        )}
 
-          {mode === 'create' && (
+        {/* Кнопка выбора файла (если файл ещё не выбран в режиме разблокировки) */}
+        {needsFileSelection ? (
+          <div className="space-y-3">
+            <button
+              onClick={onPickFile}
+              className="w-full bg-theme-text hover:bg-theme-text/90 text-theme-bg font-semibold py-3 rounded-lg transition-all shadow-sm flex items-center justify-center gap-2 active:scale-95"
+            >
+              <Upload size={18} /> Выбрать файл базы (.vault)
+            </button>
+            {canReopen && (
+              <button
+                onClick={onReopenLast}
+                className="w-full bg-theme-panel hover:bg-theme-bg border border-theme-border text-theme-text font-semibold py-3 rounded-lg transition-all flex items-center justify-center gap-2 shadow-sm"
+              >
+                <RotateCcw size={18} className="text-theme-accent" /> Открыть последний файл
+              </button>
+            )}
+          </div>
+        ) : (
+          <div className="space-y-4">
             <div className="relative">
               <KeyRound size={18} className="absolute left-3 top-3.5 text-theme-accent" />
               <input
                 type={show ? 'text' : 'password'}
-                value={pw2}
-                onChange={(e) => setPw2(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && submit()}
-                placeholder="Повторите пароль"
-                className="w-full bg-theme-bg border border-theme-border rounded-lg pl-10 pr-4 py-3 text-theme-text placeholder-theme-muted/40 focus:outline-none focus:border-theme-accent focus:ring-1 focus:ring-theme-accent/20 transition-all shadow-sm"
+                value={pw}
+                onChange={(e) => setPw(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && (mode === 'unlock' ? submit() : null)}
+                placeholder="Мастер-пароль"
+                className="w-full bg-theme-bg border border-theme-border rounded-lg pl-10 pr-10 py-3 text-theme-text placeholder-theme-muted/40 focus:outline-none focus:border-theme-accent focus:ring-1 focus:ring-theme-accent/20 transition-all shadow-sm"
               />
-            </div>
-          )}
-
-          {error && (
-            <div className="flex items-center gap-2 text-red-500 text-sm bg-red-500/10 border border-red-500/20 rounded-lg p-3">
-              <AlertTriangle size={16} /> {error}
-            </div>
-          )}
-
-          <button
-            onClick={submit}
-            disabled={busy}
-            className="w-full bg-theme-text hover:bg-theme-text/90 disabled:opacity-50 text-theme-bg font-semibold py-3 rounded-lg transition-all shadow-sm flex items-center justify-center gap-2 active:scale-95"
-          >
-            {busy ? 'Обработка...' : mode === 'create' ? <><Shield size={18} /> Создать</> : <><Unlock size={18} /> Войти</>}
-          </button>
-        </div>
-        
-        <div className="mt-6 space-y-3">
-          <input ref={fileRef} type="file" accept=".vault,.txt" onChange={pickFile} className="hidden" />
-          <button onClick={() => fileRef.current?.click()}
-            className="w-full bg-theme-panel hover:bg-theme-bg border border-theme-border text-theme-text font-semibold py-3 rounded-lg transition-all flex items-center justify-center gap-2 shadow-sm">
-            <Upload size={18} className="text-theme-accent" /> Открыть файл базы (.vault)
-          </button>
-
-          <div className="flex gap-2">
-            {hasVault && mode === 'create' && (
-              <button onClick={() => setMode('unlock')}
-                className="flex-1 text-theme-muted hover:text-theme-text text-xs py-2 transition flex items-center justify-center gap-1 font-medium">
-                <Unlock size={12} /> Войти в существующую
+              <button onClick={() => setShow(!show)} className="absolute right-3 top-3 text-theme-muted hover:text-theme-text transition-colors">
+                {show ? <EyeOff size={18} /> : <Eye size={18} />}
               </button>
+            </div>
+
+            {mode === 'create' && (
+              <div className="relative">
+                <KeyRound size={18} className="absolute left-3 top-3.5 text-theme-accent" />
+                <input
+                  type={show ? 'text' : 'password'}
+                  value={pw2}
+                  onChange={(e) => setPw2(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && submit()}
+                  placeholder="Повторите пароль"
+                  className="w-full bg-theme-bg border border-theme-border rounded-lg pl-10 pr-4 py-3 text-theme-text placeholder-theme-muted/40 focus:outline-none focus:border-theme-accent focus:ring-1 focus:ring-theme-accent/20 transition-all shadow-sm"
+                />
+              </div>
             )}
-            <button onClick={() => setMode(mode === 'create' ? 'unlock' : 'create')}
-              className="flex-1 text-theme-muted hover:text-theme-text text-xs py-2 transition flex items-center justify-center gap-1 font-medium">
-              {mode === 'create' ? 'Уже есть база?' : 'Создать новую'}
+
+            {error && (
+              <div className="flex items-center gap-2 text-red-500 text-sm bg-red-500/10 border border-red-500/20 rounded-lg p-3">
+                <AlertTriangle size={16} /> {error}
+              </div>
+            )}
+
+            <button
+              onClick={submit}
+              disabled={busy}
+              className="w-full bg-theme-text hover:bg-theme-text/90 disabled:opacity-50 text-theme-bg font-semibold py-3 rounded-lg transition-all shadow-sm flex items-center justify-center gap-2 active:scale-95"
+            >
+              {busy ? 'Обработка...' : mode === 'create'
+                ? <><FilePlus2 size={18} /> Создать файл базы</>
+                : <><Unlock size={18} /> Войти</>}
             </button>
           </div>
+        )}
+
+        {error && needsFileSelection && (
+          <div className="mt-4 flex items-center gap-2 text-red-500 text-sm bg-red-500/10 border border-red-500/20 rounded-lg p-3">
+            <AlertTriangle size={16} /> {error}
+          </div>
+        )}
+
+        <div className="mt-6 space-y-3">
+          {/* Fallback для браузеров без File System Access API */}
+          {!supportsFS && mode === 'unlock' && (
+            <>
+              <input ref={fileRef} type="file" accept=".vault,.txt" onChange={pickFileFallback} className="hidden" />
+              <button onClick={() => fileRef.current?.click()}
+                className="w-full bg-theme-panel hover:bg-theme-bg border border-theme-border text-theme-text font-semibold py-3 rounded-lg transition-all flex items-center justify-center gap-2 shadow-sm">
+                <Upload size={18} className="text-theme-accent" /> Открыть файл базы (.vault)
+              </button>
+            </>
+          )}
+
+          {/* Переключение между созданием и входом */}
+          {!needsFileSelection && (
+            <div className="flex gap-2">
+              {hasVault && mode === 'create' && (
+                <button onClick={() => setMode('unlock')}
+                  className="flex-1 text-theme-muted hover:text-theme-text text-xs py-2 transition flex items-center justify-center gap-1 font-medium">
+                  <Unlock size={12} /> Войти в существующую
+                </button>
+              )}
+              <button onClick={() => setMode(mode === 'create' ? 'unlock' : 'create')}
+                className="flex-1 text-theme-muted hover:text-theme-text text-xs py-2 transition flex items-center justify-center gap-1 font-medium">
+                {mode === 'create' ? 'Уже есть база?' : 'Создать новую'}
+              </button>
+            </div>
+          )}
+          {needsFileSelection && (
+            <button onClick={() => setMode('create')}
+              className="w-full text-theme-muted hover:text-theme-text text-xs py-2 transition flex items-center justify-center gap-1 font-medium">
+              <FilePlus2 size={12} /> Создать новый файл базы
+            </button>
+          )}
         </div>
       </div>
     </motion.div>
