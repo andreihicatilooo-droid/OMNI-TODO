@@ -7,6 +7,10 @@ import {
   fsAccessSupported, pickVaultFile, createVaultFile, writeToHandle,
   readFromHandle, verifyPermission, rememberHandle, recallHandle, forgetHandle,
 } from './lib/crypto';
+import {
+  googleConfigured, signInWithGoogle, getGoogleProfile, googleSignOut,
+  listVaultFiles, downloadVaultFile, createVaultOnDrive, updateVaultOnDrive,
+} from './lib/googleDrive';
 import { AnimatePresence } from 'framer-motion';
 import { useAuth } from './components/AuthProviders';
 
@@ -97,7 +101,7 @@ function App() {
   const supportsFS = fsAccessSupported();
   const vaultHandleRef = useRef(null);          // активный FS-хэндл (если есть)
   const [vaultName, setVaultName] = useState('');// имя активного файла
-  const [pendingFile, setPendingFile] = useState(null); // { content, name, handle } выбран, но не разблокирован
+  const [pendingFile, setPendingFile] = useState(null); // { content, name, handle, drive } выбран, но не разблокирован
   const [canReopen, setCanReopen] = useState(false);    // есть запомненный последний файл
   const saveTimer = useRef(null);
   const telegramAuthConfig = useMemo(() => import.meta.env.VITE_TELEGRAM_BOT_USERNAME ? {
@@ -105,6 +109,12 @@ function App() {
     botUsername: import.meta.env.VITE_TELEGRAM_BOT_USERNAME,
     callbackUrl: import.meta.env.VITE_TELEGRAM_CALLBACK_URL || (import.meta.env.DEV ? 'http://localhost:3001/api/auth/telegram/callback' : `${window.location.origin}/api/auth/telegram/callback`),
   } : { enabled: false, botUsername: '', callbackUrl: '' }, []);
+
+  // Google Drive: контекст активного файла на диске и профиль пользователя.
+  const driveFileRef = useRef(null);                    // { fileId, name } активного файла на Drive
+  const [googleProfile, setGoogleProfile] = useState(null);
+  const [createTarget, setCreateTarget] = useState('local'); // 'local' | 'drive'
+  const [storageLocation, setStorageLocation] = useState('localStorage'); // 'drive' | 'local' | 'localStorage'
 
   // На старте: ищем запомненный файл (FS API) либо vault в localStorage (fallback).
   useEffect(() => {
@@ -133,6 +143,12 @@ function App() {
     if (!password) return;
     try {
       const payload = await encryptData(nextState, password);
+      // 1. Активный файл на Google Drive
+      if (driveFileRef.current?.fileId) {
+        await updateVaultOnDrive(driveFileRef.current.fileId, payload);
+        return;
+      }
+      // 2. Локальный файл через File System Access API
       const handle = vaultHandleRef.current;
       if (supportsFS && handle) {
         const ok = await verifyPermission(handle, true);
@@ -142,6 +158,7 @@ function App() {
         }
         // нет разрешения — подстрахуемся localStorage
       }
+      // 3. Fallback: localStorage
       await saveVault(payload);
     } catch (e) {
       console.error('Не удалось сохранить базу', e);
@@ -159,22 +176,61 @@ function App() {
   const handleCreate = async (pw) => {
     try {
       setError('');
+      const fileName = `omni_${new Date().toISOString().split('T')[0]}.vault`;
       const payload = await encryptData(emptyState, pw);
-      if (supportsFS) {
-        const created = await createVaultFile(payload, `omni_${new Date().toISOString().split('T')[0]}.vault`);
+
+      if (createTarget === 'drive') {
+        // Создаём зашифрованный файл базы на Google Drive
+        const created = await createVaultOnDrive(fileName, payload);
+        driveFileRef.current = { fileId: created.id, name: created.name };
+        setVaultName(created.name);
+        setStorageLocation('drive');
+      } else if (supportsFS) {
+        const created = await createVaultFile(payload, fileName);
         if (!created) return; // пользователь отменил выбор файла
         vaultHandleRef.current = created.handle;
         setVaultName(created.name);
         await rememberHandle(created.handle, created.name);
+        setStorageLocation('local');
       } else {
         await saveVault(payload);
+        setStorageLocation('localStorage');
       }
       setPassword(pw);
       dispatch({ type: 'LOAD', payload: emptyState });
       setHasVault(true);
       setLocked(false);
     } catch (e) {
-      setError('Ошибка при создании файла базы');
+      setError(createTarget === 'drive' ? 'Ошибка при создании файла на Google Drive' : 'Ошибка при создании файла базы');
+      console.error(e);
+    }
+  };
+
+  // Вход через Google: авторизация → поиск файла базы на Drive.
+  const handleGoogleLogin = async () => {
+    setError('');
+    try {
+      const token = await signInWithGoogle();
+      const profile = await getGoogleProfile(token);
+      setGoogleProfile(profile);
+
+      const files = await listVaultFiles(token);
+      if (files.length > 0) {
+        // Нашли существующий файл — скачиваем самый свежий и просим пароль.
+        const f = files[0];
+        const content = await downloadVaultFile(f.id, token);
+        if (!content.startsWith('BASE1:')) { setError('Файл базы на Google Drive повреждён'); return; }
+        setPendingFile({ content, name: f.name, handle: null, drive: { fileId: f.id, name: f.name } });
+        setVaultName(f.name);
+        setCanReopen(false);
+        setMode('unlock');
+      } else {
+        // Файла ещё нет — создаём новый на Drive.
+        setCreateTarget('drive');
+        setMode('create');
+      }
+    } catch (e) {
+      setError(e.message || 'Не удалось войти через Google');
       console.error(e);
     }
   };
@@ -182,6 +238,7 @@ function App() {
   // Выбор существующего файла базы (до ввода пароля).
   const handlePickFile = async () => {
     setError('');
+    setCreateTarget('local');
     if (supportsFS) {
       try {
         const picked = await pickVaultFile();
@@ -248,9 +305,15 @@ function App() {
       const data = await decryptData(encryptedData, pw);
 
       // Закрепляем активный файл за сессией.
-      if (pendingFile?.handle) {
+      if (pendingFile?.drive) {
+        driveFileRef.current = pendingFile.drive;
+        setStorageLocation('drive');
+      } else if (pendingFile?.handle) {
         vaultHandleRef.current = pendingFile.handle;
         await rememberHandle(pendingFile.handle, pendingFile.name);
+        setStorageLocation('local');
+      } else {
+        setStorageLocation('localStorage');
       }
       dispatch({ type: 'LOAD', payload: { ...emptyState, ...data } });
       setPassword(pw);
@@ -263,7 +326,9 @@ function App() {
     }
   };
 
-  const handleLock = async () => {
+  // Блокировка сессии. signOutGoogle=false сохраняет вход в Google
+  // (нужно при переключении файлов на Drive).
+  const lockSession = async ({ signOutGoogle = true } = {}) => {
     if (saveTimer.current) clearTimeout(saveTimer.current);
     if (password) {
       try { await persist(state); } catch { /* ignore */ }
@@ -271,9 +336,14 @@ function App() {
     setLocked(true);
     setPassword('');
     vaultHandleRef.current = null;
-    setPendingFile(null);
+    driveFileRef.current = null;
+    setCreateTarget('local');
+    setStorageLocation('localStorage');
+    if (signOutGoogle) {
+      setGoogleProfile(null);
+      googleSignOut();
+    }
     dispatch({ type: 'LOAD', payload: emptyState });
-    // Предлагаем переоткрыть последний файл при следующем входе.
     if (supportsFS) {
       const remembered = await recallHandle();
       setCanReopen(Boolean(remembered?.handle));
@@ -281,6 +351,7 @@ function App() {
     setMode('unlock');
   };
 
+<<<<<<< HEAD
   const handleTelegramLogin = async (telegramUser) => {
     if (!telegramUser?.id) throw new Error('Не удалось получить данные Telegram');
     const telegramPassword = await deriveTelegramPassword(telegramUser);
@@ -291,6 +362,40 @@ function App() {
     }
   };
 
+=======
+  const handleLock = () => lockSession({ signOutGoogle: true });
+
+  // Список файлов базы на Google Drive (для панели настроек).
+  const handleListDriveFiles = async () => {
+    try {
+      return await listVaultFiles();
+    } catch (e) {
+      console.error('Не удалось получить список файлов Drive', e);
+      return [];
+    }
+  };
+
+  // Переключение на другой файл базы на Drive: блокируем сессию (Google вход
+  // сохраняется) и отправляем на ввод пароля для выбранного файла.
+  const handleSwitchDriveFile = async (file) => {
+    try {
+      const content = await downloadVaultFile(file.id);
+      if (!content.startsWith('BASE1:')) { setError('Файл базы повреждён'); return; }
+      await lockSession({ signOutGoogle: false });
+      setPendingFile({ content, name: file.name, handle: null, drive: { fileId: file.id, name: file.name } });
+      setVaultName(file.name);
+      setMode('unlock');
+    } catch (e) {
+      console.error('Не удалось переключить файл базы', e);
+    }
+  };
+
+  // Отвязать Google: выйти из аккаунта и заблокировать сессию.
+  const handleDisconnectGoogle = async () => {
+    await lockSession({ signOutGoogle: true });
+  };
+
+>>>>>>> 5c55c7fb812e6b62bc1723ffdc025128bf1d2d2a
   const handleExportVault = async () => {
     if (!password) return;
     try {
@@ -338,8 +443,12 @@ function App() {
             onOpenFile={handleOpenFileFallback}
             onReopenLast={handleReopenLast}
             onForgetLast={async () => { await forgetHandle(); setCanReopen(false); setVaultName(''); }}
+            onGoogleLogin={handleGoogleLogin}
             hasVault={hasVault}
             supportsFS={supportsFS}
+            googleEnabled={googleConfigured()}
+            googleProfile={googleProfile}
+            createTarget={createTarget}
             pendingFileName={pendingFile?.name || (canReopen ? vaultName : '')}
             canReopen={canReopen}
             error={error}
@@ -354,6 +463,11 @@ function App() {
             onLock={handleLock}
             onExportVault={handleExportVault}
             vaultName={vaultName}
+            storageLocation={storageLocation}
+            googleProfile={googleProfile}
+            onListDriveFiles={handleListDriveFiles}
+            onSwitchDriveFile={handleSwitchDriveFile}
+            onDisconnectGoogle={handleDisconnectGoogle}
           />
         )}
       </AnimatePresence>
