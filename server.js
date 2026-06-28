@@ -371,6 +371,47 @@ app.post('/api/generate_image', async (req, res) => {
   }
 });
 
+
+app.post('/api/gemini', async (req, res) => {
+  try {
+    const { prompt } = req.body;
+    if (!prompt) {
+      return res.status(400).json({ error: 'Требуется промпт' });
+    }
+
+    const client = await auth.getClient();
+    const tokenResponse = await client.getAccessToken();
+    const token = tokenResponse.token;
+
+    const requestBody = {
+      contents: [{
+        parts: [{ text: prompt }]
+      }]
+    };
+
+    const response = await fetch("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent", {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${token}`,
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(requestBody)
+    });
+
+    const data = await response.json();
+    if (!response.ok) {
+      console.error("Gemini API Error Response:", data);
+      return res.status(response.status).json({ error: 'Ошибка вызова Gemini API', details: data });
+    }
+
+    res.json(data);
+
+  } catch (error) {
+    console.error("Ошибка прокси-сервера Gemini:", error);
+    res.status(500).json({ error: 'Внутренняя ошибка сервера для прокси Gemini', message: error.message });
+  }
+});
+
 app.listen(port, '0.0.0.0', () => {
   console.log(`OMNI Cloud Proxy Server is running on http://0.0.0.0:${port}`);
 });
