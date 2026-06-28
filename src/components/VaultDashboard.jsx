@@ -237,162 +237,241 @@ const BaseView = ({ state, dispatch }) => {
 
 // ==== OMNI AI VIEW (Mind Extractor) ====
 const OmniView = ({ state, dispatch }) => {
-  const [input, setInput] = useState('');
-  const [loading, setLoading] = useState(false);
+  const sessions = state.chatSessions || [];
+  const [activeChatId, setActiveChatId] = React.useState(() => sessions[0]?.id || null);
+  const [input, setInput] = React.useState('');
+  const [loading, setLoading] = React.useState(false);
+  const [editingName, setEditingName] = React.useState(null);
+  const [editNameValue, setEditNameValue] = React.useState('');
+  const messagesEndRef = React.useRef(null);
 
-  const history = state.cerberHistory || [];
+  const activeChat = sessions.find(s => s.id === activeChatId);
+  const history = activeChat?.messages || [];
+
+  React.useEffect(() => {
+    if (sessions.length === 0) {
+      const newId = Date.now();
+      dispatch({ type: 'ADD_CHAT_SESSION', payload: { id: newId } });
+      setActiveChatId(newId);
+    } else if (!sessions.find(s => s.id === activeChatId)) {
+      setActiveChatId(sessions[sessions.length - 1].id);
+    }
+  }, [state.chatSessions, activeChatId]);
+
+  React.useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [history.length, loading]);
+
+  const handleNewChat = () => {
+    const newId = Date.now();
+    dispatch({ type: 'ADD_CHAT_SESSION', payload: { id: newId } });
+    setActiveChatId(newId);
+  };
+
+  const handleDeleteChat = (e, chatId) => {
+    e.stopPropagation();
+    dispatch({ type: 'DELETE_CHAT_SESSION', payload: chatId });
+  };
+
+  const handleRenameStart = (e, chat) => {
+    e.stopPropagation();
+    setEditingName(chat.id);
+    setEditNameValue(chat.name);
+  };
+
+  const handleRenameSubmit = (id) => {
+    if (editNameValue.trim()) {
+      dispatch({ type: 'RENAME_CHAT_SESSION', payload: { id, name: editNameValue.trim() } });
+    }
+    setEditingName(null);
+  };
 
   const parseActions = (text) => {
     const actions = [];
-    // Pattern for set_reminder(task="...", date_time_str="...")
     const reminderRegex = /set_reminder\s*\(\s*task\s*=\s*["']([^"']+)["']\s*(?:,\s*date_time_str\s*=\s*["']([^"']+)["'])?\s*\)/g;
     let match;
     while ((match = reminderRegex.exec(text)) !== null) {
       actions.push({ type: 'ADD_ITEM', payload: { title: match[1], type: 'task', content: match[2] || 'Извлечено через OMNI' } });
     }
-
-    // Pattern for new project suggestions
     if (text.toLowerCase().includes('создать проект') || text.toLowerCase().includes('create project')) {
-       const projectMatch = text.match(/(?:проект|project)\s*["']([^"']+)["']/i);
-       if (projectMatch) {
-         actions.push({ type: 'ADD_PROJECT', payload: { name: projectMatch[1], description: 'Инициировано OMNI Orchestrator' } });
-       }
+      const projectMatch = text.match(/(?:проект|project)\s*["']([^"']+)["']/i);
+      if (projectMatch) {
+        actions.push({ type: 'ADD_PROJECT', payload: { name: projectMatch[1], description: 'Инициировано OMNI Orchestrator' } });
+      }
     }
-
     return actions;
   };
 
   const handleSend = async () => {
-    if (!input.trim() || loading) return;
-    
-    const userMsg = input.trim();
-    setInput('');
-    
-    dispatch({
-      type: 'ADD_CERBER_MSG',
-      payload: { role: 'user', content: userMsg, timestamp: new Date().toISOString() }
-    });
+    if (!input.trim() || loading || !activeChatId) return;
 
+    const msgText = input.trim();
+    setInput('');
+
+    dispatch({ type: 'ADD_MSG_TO_SESSION', payload: { sessionId: activeChatId, msg: { role: 'user', content: msgText, timestamp: new Date().toISOString() } } });
     setLoading(true);
+
     try {
       const response = await fetch('/api/omni', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: userMsg })
+        body: JSON.stringify({ text: msgText }),
       });
-
       const data = await response.json();
-      let aiText = "Извините, ядро OMNI не ответило.";
-      
+      let aiText = 'Извините, ядро OMNI не ответило.';
       if (response.ok) {
         aiText = data.responses?.[0]?.text || data.reply?.[0]?.text || JSON.stringify(data);
       } else if (data.error) {
         aiText = `Ошибка ядра: ${data.error.message || JSON.stringify(data.error)}`;
       }
-
-      dispatch({
-        type: 'ADD_CERBER_MSG',
-        payload: { 
-          role: 'assistant', 
-          content: aiText, 
-          timestamp: new Date().toISOString(),
-          actions: parseActions(aiText) 
-        }
-      });
-    } catch (err) {
-      dispatch({
-        type: 'ADD_CERBER_MSG',
-        payload: { role: 'system', content: 'Ошибка связи с ядром OMNI. Проверьте соединение.', timestamp: new Date().toISOString() }
-      });
+      dispatch({ type: 'ADD_MSG_TO_SESSION', payload: { sessionId: activeChatId, msg: { role: 'assistant', content: aiText, timestamp: new Date().toISOString(), actions: parseActions(aiText) } } });
+    } catch {
+      dispatch({ type: 'ADD_MSG_TO_SESSION', payload: { sessionId: activeChatId, msg: { role: 'system', content: 'Ошибка связи с ядром OMNI. Проверьте соединение.', timestamp: new Date().toISOString() } } });
     } finally {
       setLoading(false);
     }
   };
 
-  const executeAction = (action, idx) => {
-    dispatch(action);
-    // Mark action as executed in UI (simple alert for now)
-    alert(`Выполнено: ${action.type === 'ADD_ITEM' ? 'Задача создана' : 'Проект создан'}`);
-  };
-
   return (
-    <div className="flex flex-col h-[calc(100vh-12rem)] animate-in fade-in duration-500">
-      <div className="bg-theme-panel border-b-0 border border-theme-border rounded-t-2xl p-4 flex items-center justify-between shadow-sm">
-         <h3 className="text-lg font-serif font-bold text-theme-text flex items-center gap-2">
-          <Bot className="text-theme-accent" size={20} /> Личный ассистент
-        </h3>
-        <div className="flex items-center gap-4">
-          <span className="hidden sm:inline text-[10px] font-mono text-theme-muted uppercase tracking-tighter">Mind Extraction Active</span>
-          <span className="text-xs font-mono text-theme-accent bg-theme-panel px-2 py-1 rounded">MIND_LINK: ESTABLISHED</span>
+    <div className="flex h-[calc(100vh-12rem)] rounded-2xl overflow-hidden border border-theme-border animate-in fade-in duration-500">
+      {/* Sidebar: список чатов */}
+      <div className="w-56 shrink-0 flex flex-col bg-theme-bg border-r border-theme-border">
+        <div className="p-3 border-b border-theme-border shrink-0">
+          <button
+            onClick={handleNewChat}
+            className="w-full flex items-center justify-center gap-2 px-3 py-2.5 bg-theme-accent text-theme-bg rounded-xl text-sm font-semibold hover:bg-theme-accent-hover transition-all shadow-sm active:scale-95"
+          >
+            <Plus size={15} /> Новый чат
+          </button>
+        </div>
+        <div className="flex-1 overflow-y-auto custom-scrollbar p-2 space-y-0.5">
+          {[...sessions].reverse().map(chat => (
+            <div
+              key={chat.id}
+              onClick={() => setActiveChatId(chat.id)}
+              className={`group flex items-start gap-2 px-3 py-2.5 rounded-xl cursor-pointer transition-all ${
+                activeChatId === chat.id
+                  ? 'bg-theme-panel border border-theme-accent/30 text-theme-text shadow-sm'
+                  : 'text-theme-muted hover:bg-theme-panel/50 hover:text-theme-text border border-transparent'
+              }`}
+            >
+              <Bot size={14} className="shrink-0 text-theme-accent mt-0.5" />
+              <div className="flex-1 min-w-0">
+                {editingName === chat.id ? (
+                  <input
+                    autoFocus
+                    value={editNameValue}
+                    onChange={e => setEditNameValue(e.target.value)}
+                    onBlur={() => handleRenameSubmit(chat.id)}
+                    onKeyDown={e => {
+                      if (e.key === 'Enter') handleRenameSubmit(chat.id);
+                      if (e.key === 'Escape') setEditingName(null);
+                    }}
+                    onClick={e => e.stopPropagation()}
+                    className="w-full bg-transparent outline-none border-b border-theme-accent text-xs text-theme-text"
+                  />
+                ) : (
+                  <p
+                    className="text-xs font-medium leading-snug line-clamp-2"
+                    onDoubleClick={e => handleRenameStart(e, chat)}
+                    title="Двойной клик для переименования"
+                  >
+                    {chat.name}
+                  </p>
+                )}
+                <p className="text-[10px] text-theme-muted/70 mt-0.5">{chat.messages.length} сообщ.</p>
+              </div>
+              <button
+                onClick={e => handleDeleteChat(e, chat.id)}
+                className="shrink-0 opacity-0 group-hover:opacity-100 p-1 hover:text-red-500 rounded transition-all mt-0.5"
+                title="Удалить чат"
+              >
+                <Trash2 size={12} />
+              </button>
+            </div>
+          ))}
         </div>
       </div>
 
-      <div className="flex-1 bg-theme-bg border-l border-r border-theme-border overflow-y-auto p-6 space-y-6 custom-scrollbar">
-        {history.length === 0 ? (
-          <div className="h-full flex flex-col items-center justify-center opacity-50 text-center">
-            <Bot size={64} className="text-theme-accent mb-4" />
-            <p className="text-theme-muted max-w-md italic font-serif text-lg">«Расскажите мне о ваших планах, и я превращу их в структуру.»</p>
-          </div>
-        ) : (
-          history.map((msg, idx) => (
-            <div key={idx} className={`flex flex-col ${msg.role === 'user' ? 'items-end' : 'items-start'}`}>
-              <div className={`
-                max-w-[80%] rounded-2xl px-5 py-3 
-                ${msg.role === 'user' 
-                  ? 'bg-theme-text text-theme-bg rounded-tr-sm shadow-sm' 
-                  : msg.role === 'system'
-                    ? 'bg-red-500/10 text-red-500 border border-red-500/20 rounded-tl-sm'
-                    : 'bg-theme-panel text-theme-text border border-theme-border rounded-tl-sm shadow-sm'}
-              `}>
-                <div className="text-xs opacity-50 mb-1 flex items-center gap-1">
-                  {msg.role === 'assistant' && <Bot size={12} />}
-                  {msg.role === 'assistant' ? 'АССИСТЕНТ' : msg.role.toUpperCase()}
-                </div>
-                <div className="whitespace-pre-wrap">{msg.content}</div>
-                
-                {/* Mind Extractor Actions */}
-                {msg.actions && msg.actions.length > 0 && (
-                  <div className="mt-4 pt-3 border-t border-theme-border flex flex-wrap gap-2">
-                    {msg.actions.map((action, aIdx) => (
-                      <button 
-                        key={aIdx}
-                        onClick={() => executeAction(action, idx)}
-                        className="bg-theme-panel hover:bg-theme-bg border border-theme-accent/30 text-theme-accent text-xs font-bold py-2 px-3 rounded-lg transition-all flex items-center gap-2 shadow-sm"
-                      >
-                        <Plus size={14} /> Выполнить: {action.payload.title || action.payload.name}
-                      </button>
-                    ))}
+      {/* Область чата */}
+      <div className="flex-1 flex flex-col min-w-0">
+        <div className="bg-theme-panel border-b border-theme-border p-3 flex items-center justify-between shrink-0 shadow-sm">
+          <h3 className="text-sm font-serif font-bold text-theme-text flex items-center gap-2 truncate">
+            <Bot className="text-theme-accent shrink-0" size={16} />
+            <span className="truncate">{activeChat?.name || 'Личный ассистент'}</span>
+          </h3>
+          <span className="text-xs font-mono text-theme-accent bg-theme-bg px-2 py-1 rounded border border-theme-border shrink-0 ml-2">MIND_LINK</span>
+        </div>
+
+        <div className="flex-1 bg-theme-bg overflow-y-auto p-5 space-y-5 custom-scrollbar">
+          {history.length === 0 ? (
+            <div className="h-full flex flex-col items-center justify-center opacity-40 text-center pointer-events-none">
+              <Bot size={56} className="text-theme-accent mb-4" />
+              <p className="text-theme-muted max-w-md italic font-serif">«Расскажите мне о ваших планах, и я превращу их в структуру.»</p>
+            </div>
+          ) : (
+            history.map((msg, idx) => (
+              <div key={idx} className={`flex flex-col ${msg.role === 'user' ? 'items-end' : 'items-start'}`}>
+                <div className={`
+                  max-w-[80%] rounded-2xl px-5 py-3
+                  ${msg.role === 'user'
+                    ? 'bg-theme-text text-theme-bg rounded-tr-sm shadow-sm'
+                    : msg.role === 'system'
+                      ? 'bg-red-500/10 text-red-500 border border-red-500/20 rounded-tl-sm'
+                      : 'bg-theme-panel text-theme-text border border-theme-border rounded-tl-sm shadow-sm'}
+                `}>
+                  <div className="text-xs opacity-50 mb-1 flex items-center gap-1">
+                    {msg.role === 'assistant' && <Bot size={11} />}
+                    {msg.role === 'assistant' ? 'АССИСТЕНТ' : msg.role.toUpperCase()}
                   </div>
-                )}
+                  <div className="whitespace-pre-wrap text-sm leading-relaxed">{msg.content}</div>
+                  {msg.actions?.length > 0 && (
+                    <div className="mt-3 pt-3 border-t border-theme-border flex flex-wrap gap-2">
+                      {msg.actions.map((action, aIdx) => (
+                        <button
+                          key={aIdx}
+                          onClick={() => { dispatch(action); alert(`Выполнено: ${action.type === 'ADD_ITEM' ? 'Задача создана' : 'Проект создан'}`); }}
+                          className="bg-theme-panel hover:bg-theme-bg border border-theme-accent/30 text-theme-accent text-xs font-bold py-1.5 px-3 rounded-lg transition-all flex items-center gap-1.5 shadow-sm"
+                        >
+                          <Plus size={13} /> {action.payload.title || action.payload.name}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                <span className="text-[10px] text-theme-muted mt-1 px-1">
+                  {new Date(msg.timestamp).toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}
+                </span>
+              </div>
+            ))
+          )}
+          {loading && (
+            <div className="flex justify-start">
+              <div className="bg-theme-panel text-theme-muted border border-theme-border rounded-2xl rounded-tl-sm px-5 py-3 animate-pulse shadow-sm text-sm">
+                Анализ запроса...
               </div>
             </div>
-          ))
-        )}
-        {loading && (
-          <div className="flex justify-start">
-            <div className="bg-theme-panel text-theme-muted border border-theme-border rounded-2xl rounded-tl-sm px-5 py-3 animate-pulse shadow-sm">
-              Анализ запроса...
-            </div>
-          </div>
-        )}
-      </div>
+          )}
+          <div ref={messagesEndRef} />
+        </div>
 
-      <div className="bg-theme-panel border border-t-0 border-theme-border rounded-b-2xl p-4 flex gap-3 shadow-sm">
-        <input 
-          type="text" 
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && handleSend()}
-          placeholder="Опишите вашу идею или задачу..."
-          className="flex-1 bg-theme-bg border border-theme-border rounded-xl px-4 py-3 text-theme-text focus:outline-none focus:border-theme-accent transition-all shadow-inner"
-        />
-        <button 
-          onClick={handleSend}
-          disabled={loading || !input.trim()}
-          className="bg-theme-text hover:bg-theme-text/90 disabled:opacity-50 text-theme-bg p-3 rounded-xl transition-all shadow-md flex items-center justify-center"
-        >
-          <Send size={20} />
-        </button>
+        <div className="bg-theme-panel border-t border-theme-border p-3 flex gap-3 shrink-0 shadow-sm">
+          <input
+            type="text"
+            value={input}
+            onChange={e => setInput(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && handleSend()}
+            placeholder="Опишите вашу идею или задачу..."
+            className="flex-1 bg-theme-bg border border-theme-border rounded-xl px-4 py-2.5 text-sm text-theme-text focus:outline-none focus:border-theme-accent transition-all shadow-inner"
+          />
+          <button
+            onClick={handleSend}
+            disabled={loading || !input.trim()}
+            className="bg-theme-text hover:bg-theme-text/90 disabled:opacity-50 text-theme-bg p-2.5 rounded-xl transition-all shadow-md flex items-center justify-center active:scale-95"
+          >
+            <Send size={18} />
+          </button>
+        </div>
       </div>
     </div>
   );

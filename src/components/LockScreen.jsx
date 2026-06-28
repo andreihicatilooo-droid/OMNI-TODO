@@ -1,16 +1,20 @@
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { Lock, Shield, KeyRound, Eye, EyeOff, AlertTriangle, Upload, Unlock, FileText, RotateCcw, X, FilePlus2 } from 'lucide-react';
 import { motion } from 'framer-motion';
 
 const LockScreen = ({
   mode, setMode, onUnlock, onCreate, onPickFile, onOpenFile, onReopenLast, onForgetLast,
   hasVault, supportsFS, pendingFileName, canReopen, error,
+  onTelegramLogin, telegramAuthConfig,
 }) => {
   const [pw, setPw] = useState('');
   const [pw2, setPw2] = useState('');
   const [show, setShow] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [telegramBusy, setTelegramBusy] = useState(false);
+  const [telegramMessage, setTelegramMessage] = useState('');
   const fileRef = useRef(null);
+  const telegramWidgetRef = useRef(null);
 
   const submit = async () => {
     if (busy) return;
@@ -33,6 +37,46 @@ const LockScreen = ({
     if (file) onOpenFile(file);
     e.target.value = '';
   };
+
+  useEffect(() => {
+    const handleMessage = (event) => {
+      if (event.data?.source !== 'omni-telegram-auth') return;
+      if (event.data.ok) {
+        setTelegramBusy(true);
+        setTelegramMessage('');
+        Promise.resolve(onTelegramLogin?.(event.data.user))
+          .catch((e) => setTelegramMessage(e?.message || 'Не удалось выполнить вход через Telegram'))
+          .finally(() => setTelegramBusy(false));
+      } else {
+        setTelegramMessage(event.data.error || 'Не удалось выполнить вход через Telegram');
+      }
+    };
+
+    window.addEventListener('message', handleMessage);
+    return () => window.removeEventListener('message', handleMessage);
+  }, [onTelegramLogin]);
+
+  useEffect(() => {
+    if (!telegramAuthConfig?.enabled || !telegramWidgetRef.current || typeof window === 'undefined') {
+      return undefined;
+    }
+
+    const container = telegramWidgetRef.current;
+    container.innerHTML = '';
+
+    const script = document.createElement('script');
+    script.src = 'https://telegram.org/js/telegram-widget.js?22';
+    script.async = true;
+    script.setAttribute('data-telegram-login', telegramAuthConfig.botUsername);
+    script.setAttribute('data-size', 'large');
+    script.setAttribute('data-auth-url', telegramAuthConfig.callbackUrl);
+    script.setAttribute('data-request-access', 'write');
+    container.appendChild(script);
+
+    return () => {
+      container.innerHTML = '';
+    };
+  }, [telegramAuthConfig?.enabled, telegramAuthConfig?.botUsername, telegramAuthConfig?.callbackUrl]);
 
   // В режиме разблокировки сначала нужно выбрать файл базы (для FS API).
   const needsFileSelection = mode === 'unlock' && supportsFS && !pendingFileName;
@@ -141,6 +185,28 @@ const LockScreen = ({
                 ? <><FilePlus2 size={18} /> Создать файл базы</>
                 : <><Unlock size={18} /> Войти</>}
             </button>
+
+            <div className="flex items-center gap-2 text-theme-muted">
+              <div className="h-px flex-1 bg-theme-border" />
+              <span className="text-[11px] uppercase tracking-[0.2em]">или</span>
+              <div className="h-px flex-1 bg-theme-border" />
+            </div>
+
+            {telegramAuthConfig?.enabled ? (
+              <div className="space-y-2">
+                <div ref={telegramWidgetRef} className="flex justify-center" />
+                {telegramBusy && <p className="text-center text-sm text-theme-muted">Выполняем вход через Telegram…</p>}
+                {telegramMessage && (
+                  <div className="flex items-center gap-2 text-red-500 text-sm bg-red-500/10 border border-red-500/20 rounded-lg p-3">
+                    <AlertTriangle size={16} /> {telegramMessage}
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="rounded-lg border border-dashed border-theme-border bg-theme-bg/60 px-3 py-2 text-center text-[11px] leading-relaxed text-theme-muted">
+                Вход через Telegram будет доступен после настройки <span className="font-mono">VITE_TELEGRAM_BOT_USERNAME</span> и <span className="font-mono">TELEGRAM_BOT_TOKEN</span>.
+              </div>
+            )}
           </div>
         )}
 

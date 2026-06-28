@@ -1,3 +1,4 @@
+/* global process */
 import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
@@ -11,6 +12,7 @@ const port = 3001;
 
 app.use(cors());
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
 // ==========================================================================
 // OAuth Web Flow для интеграции нейросетей (Google Gemini, GitHub Copilot, Claude)
@@ -77,7 +79,7 @@ const oauthStates = new Map();
 
 // HTML-страница, которая возвращается в popup после callback: шлёт сообщение
 // родительскому окну и закрывается.
-const popupResponse = (payload) => `<!doctype html>
+const popupResponse = (payload, source = 'omni-oauth') => `<!doctype html>
 <html><head><meta charset="utf-8"><title>OAuth</title></head>
 <body style="font-family:system-ui;background:#1a1a1a;color:#eee;display:flex;align-items:center;justify-content:center;height:100vh;margin:0">
 <div style="text-align:center">
@@ -86,7 +88,7 @@ const popupResponse = (payload) => `<!doctype html>
 </div>
 <script>
   (function(){
-    var msg = ${JSON.stringify({ source: 'omni-oauth', ...payload })};
+    var msg = ${JSON.stringify({ source, ...payload })};
     if (window.opener) { window.opener.postMessage(msg, '*'); }
     setTimeout(function(){ window.close(); }, ${payload.ok ? 800 : 3000});
   })();
@@ -214,6 +216,43 @@ app.post('/api/auth/:provider/disconnect', (req, res) => {
   res.json({ ok: true });
 });
 
+app.post('/api/auth/telegram/callback', (req, res) => {
+  const { hash, ...fields } = req.body || {};
+  const botToken = process.env.TELEGRAM_BOT_TOKEN;
+
+  if (!botToken) {
+    return res.send(popupResponse({ ok: false, provider: 'telegram', error: 'Telegram bot token is not configured' }, 'omni-telegram-auth'));
+  }
+
+  if (!hash) {
+    return res.send(popupResponse({ ok: false, provider: 'telegram', error: 'Telegram auth data is missing' }, 'omni-telegram-auth'));
+  }
+
+  const dataCheckString = Object.entries(fields)
+    .filter(([, value]) => value !== undefined && value !== '')
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([key, value]) => `${key}=${value}`)
+    .join('\n');
+
+  const secretKey = crypto.createHash('sha256').update(botToken).digest();
+  const computedHash = crypto.createHmac('sha256', secretKey).update(dataCheckString).digest('hex');
+
+  if (computedHash !== hash) {
+    return res.send(popupResponse({ ok: false, provider: 'telegram', error: 'Telegram auth data is invalid' }, 'omni-telegram-auth'));
+  }
+
+  const user = {
+    id: Number(fields.id),
+    first_name: fields.first_name || null,
+    last_name: fields.last_name || null,
+    username: fields.username || null,
+    photo_url: fields.photo_url || null,
+    auth_date: Number(fields.auth_date),
+  };
+
+  return res.send(popupResponse({ ok: true, provider: 'telegram', user }, 'omni-telegram-auth'));
+});
+
 // Инициализация Google Auth
 const auth = new GoogleAuth({
   scopes: 'https://www.googleapis.com/auth/cloud-platform'
@@ -234,7 +273,7 @@ app.post('/api/omni', async (req, res) => {
     let instructions = "";
     try {
       instructions = fs.readFileSync(OMNI_INSTRUCTIONS_PATH, 'utf8');
-    } catch (e) {
+    } catch {
       console.warn("Could not read OMNI instructions, using default.");
     }
 
