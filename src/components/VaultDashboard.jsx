@@ -814,9 +814,125 @@ const SettingsView = ({ state, dispatch, onExportVault, onLock }) => {
       </div>
 
       <div className="glass-panel p-6 sm:p-8">
+        <h3 className="text-xl font-serif font-bold text-theme-text mb-6 flex items-center gap-2 border-b border-theme-border pb-4">
+          <Bot className="text-theme-accent" /> Настройки нейросетей
+        </h3>
+
+        <div className="space-y-6">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-theme-text font-medium">Модель ИИ</p>
+              <p className="text-sm text-theme-muted mt-1">Выберите модель для работы с запросами</p>
+            </div>
+            <select
+              value={state.settings?.aiModel || 'claude-opus-4-8'}
+              onChange={(e) => dispatch({ type: 'UPDATE_SETTINGS', payload: { aiModel: e.target.value } })}
+              className="bg-theme-panel border border-theme-border rounded-xl px-4 py-2.5 text-theme-text outline-none focus:border-theme-accent transition-all cursor-pointer shadow-sm"
+            >
+              <option value="claude-opus-4-8">Claude Opus 4.8 (Самая мощная)</option>
+              <option value="claude-sonnet-4-6">Claude Sonnet 4.6 (Оптимальная)</option>
+              <option value="claude-haiku-4-5">Claude Haiku 4.5 (Быстрая)</option>
+              <option value="claude-fable-5">Claude Fable 5 (Экспериментальная)</option>
+            </select>
+          </div>
+
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-theme-text font-medium">Температура (Творчество)</p>
+              <p className="text-sm text-theme-muted mt-1">0 = логично, 1 = креативно</p>
+            </div>
+            <div className="flex items-center gap-3">
+              <input
+                type="range"
+                min="0"
+                max="1"
+                step="0.1"
+                value={state.settings?.aiTemperature || 0.7}
+                onChange={(e) => dispatch({ type: 'UPDATE_SETTINGS', payload: { aiTemperature: parseFloat(e.target.value) } })}
+                className="w-32 cursor-pointer"
+              />
+              <span className="text-sm font-mono text-theme-text w-8 text-right">{(state.settings?.aiTemperature || 0.7).toFixed(1)}</span>
+            </div>
+          </div>
+
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-theme-text font-medium">Макс. токены в ответе</p>
+              <p className="text-sm text-theme-muted mt-1">Ограничение длины ответа</p>
+            </div>
+            <select
+              value={state.settings?.aiMaxTokens || 1024}
+              onChange={(e) => dispatch({ type: 'UPDATE_SETTINGS', payload: { aiMaxTokens: Number(e.target.value) } })}
+              className="bg-theme-panel border border-theme-border rounded-xl px-4 py-2.5 text-theme-text outline-none focus:border-theme-accent transition-all cursor-pointer shadow-sm"
+            >
+              <option value={256}>256 токенов (Коротко)</option>
+              <option value={512}>512 токенов</option>
+              <option value={1024}>1024 токена (По умолчанию)</option>
+              <option value={2048}>2048 токенов</option>
+              <option value={4096}>4096 токенов (Длинный ответ)</option>
+            </select>
+          </div>
+
+          <div className="pt-6 border-t border-theme-border space-y-4">
+            <p className="text-theme-text font-medium">Функциональность</p>
+
+            <label className="flex items-center gap-3 cursor-pointer p-3 rounded-lg hover:bg-theme-panel/30 transition-colors">
+              <input
+                type="checkbox"
+                checked={state.settings?.aiUseTools !== false}
+                onChange={(e) => dispatch({ type: 'UPDATE_SETTINGS', payload: { aiUseTools: e.target.checked } })}
+                className="w-4 h-4 cursor-pointer accent-theme-accent"
+              />
+              <div>
+                <p className="text-sm font-medium text-theme-text">Использование инструментов</p>
+                <p className="text-xs text-theme-muted">Позволяет ИИ вызывать функции и API</p>
+              </div>
+            </label>
+
+            <label className="flex items-center gap-3 cursor-pointer p-3 rounded-lg hover:bg-theme-panel/30 transition-colors">
+              <input
+                type="checkbox"
+                checked={state.settings?.aiStreaming !== false}
+                onChange={(e) => dispatch({ type: 'UPDATE_SETTINGS', payload: { aiStreaming: e.target.checked } })}
+                className="w-4 h-4 cursor-pointer accent-theme-accent"
+              />
+              <div>
+                <p className="text-sm font-medium text-theme-text">Потоковая передача</p>
+                <p className="text-xs text-theme-muted">Ответы выводятся по мере генерации</p>
+              </div>
+            </label>
+
+            <label className="flex items-center gap-3 cursor-pointer p-3 rounded-lg hover:bg-theme-panel/30 transition-colors">
+              <input
+                type="checkbox"
+                checked={state.settings?.aiVision !== false}
+                onChange={(e) => dispatch({ type: 'UPDATE_SETTINGS', payload: { aiVision: e.target.checked } })}
+                className="w-4 h-4 cursor-pointer accent-theme-accent"
+              />
+              <div>
+                <p className="text-sm font-medium text-theme-text">Компьютерное зрение</p>
+                <p className="text-xs text-theme-muted">Анализ изображений и скриншотов</p>
+              </div>
+            </label>
+          </div>
+
+          <div className="pt-6 border-t border-theme-border">
+            <p className="text-theme-text font-medium mb-3">Системный промпт</p>
+            <textarea
+              value={state.settings?.aiSystemPrompt || 'Вы - полезный, вежливый и честный помощник.'}
+              onChange={(e) => dispatch({ type: 'UPDATE_SETTINGS', payload: { aiSystemPrompt: e.target.value } })}
+              className="w-full h-24 bg-theme-panel border border-theme-border rounded-xl px-4 py-3 text-sm text-theme-text outline-none focus:border-theme-accent transition-all resize-none"
+              placeholder="Введите инструкции для ИИ..."
+            />
+            <p className="text-xs text-theme-muted mt-2">Эти инструкции будут передаваться во все запросы к ИИ</p>
+          </div>
+        </div>
+      </div>
+
+      <div className="glass-panel p-6 sm:p-8">
       <section>
         <h3 className="text-2xl font-serif font-bold text-theme-text mb-8 flex items-center gap-4">
-          <Share2 className="text-theme-accent" size={28} /> 
+          <Share2 className="text-theme-accent" size={28} />
           <span>Управление Данными</span>
         </h3>
         
