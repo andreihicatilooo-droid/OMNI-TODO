@@ -1,10 +1,5 @@
-<<<<<<< HEAD
 import { useState, useRef, useEffect } from 'react';
-import { Lock, Shield, KeyRound, Eye, EyeOff, AlertTriangle, Upload, Unlock, FileText, RotateCcw, X, FilePlus2 } from 'lucide-react';
-=======
-import { useState, useRef } from 'react';
 import { Lock, Shield, KeyRound, Eye, EyeOff, AlertTriangle, Upload, Unlock, FileText, RotateCcw, X, FilePlus2, Cloud, HardDrive } from 'lucide-react';
->>>>>>> 5c55c7fb812e6b62bc1723ffdc025128bf1d2d2a
 import { motion } from 'framer-motion';
 
 // Иконка Google (официальные цвета).
@@ -18,14 +13,11 @@ const GoogleIcon = ({ size = 18 }) => (
 );
 
 const LockScreen = ({
-<<<<<<< HEAD
   mode, setMode, onUnlock, onCreate, onPickFile, onOpenFile, onReopenLast, onForgetLast,
+  onGoogleLogin,
   hasVault, supportsFS, pendingFileName, canReopen, error,
   onTelegramLogin, telegramAuthConfig,
-=======
-  mode, setMode, onUnlock, onCreate, onPickFile, onOpenFile, onReopenLast, onForgetLast, onGoogleLogin,
-  hasVault, supportsFS, googleEnabled, googleProfile, createTarget, pendingFileName, canReopen, error,
->>>>>>> 5c55c7fb812e6b62bc1723ffdc025128bf1d2d2a
+  googleEnabled, googleProfile, createTarget,
 }) => {
   const [pw, setPw] = useState('');
   const [pw2, setPw2] = useState('');
@@ -230,7 +222,6 @@ const LockScreen = ({
                 : <><Unlock size={18} /> Войти</>}
             </button>
 
-<<<<<<< HEAD
             <div className="flex items-center gap-2 text-theme-muted">
               <div className="h-px flex-1 bg-theme-border" />
               <span className="text-[11px] uppercase tracking-[0.2em]">или</span>
@@ -251,7 +242,8 @@ const LockScreen = ({
               <div className="rounded-lg border border-dashed border-theme-border bg-theme-bg/60 px-3 py-2 text-center text-[11px] leading-relaxed text-theme-muted">
                 Вход через Telegram будет доступен после настройки <span className="font-mono">VITE_TELEGRAM_BOT_USERNAME</span> и <span className="font-mono">TELEGRAM_BOT_TOKEN</span>.
               </div>
-=======
+            )}
+
             {/* В режиме создания: альтернатива — создать на Google Drive */}
             {mode === 'create' && createTarget !== 'drive' && googleEnabled && (
               <>
@@ -267,7 +259,6 @@ const LockScreen = ({
                   <GoogleIcon /> Создать на Google Drive
                 </button>
               </>
->>>>>>> 5c55c7fb812e6b62bc1723ffdc025128bf1d2d2a
             )}
           </div>
         )}

@@ -312,18 +312,45 @@ const OmniView = ({ state, dispatch }) => {
     setLoading(true);
 
     try {
-      const response = await fetch('/api/omni', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text: msgText }),
-      });
-      const data = await response.json();
-      let aiText = 'Извините, ядро OMNI не ответило.';
-      if (response.ok) {
-        aiText = data.responses?.[0]?.text || data.reply?.[0]?.text || JSON.stringify(data);
-      } else if (data.error) {
-        aiText = `Ошибка ядра: ${data.error.message || JSON.stringify(data.error)}`;
+      const selectedModel = state.settings?.aiModel || 'openai/gpt-5-chat';
+      const useGitHubModels = selectedModel.includes('/');
+
+      let aiText = 'Извините, ассистент не ответил.';
+
+      if (useGitHubModels) {
+        const response = await fetch('/api/github-models/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            prompt: msgText,
+            system: state.settings?.aiSystemPrompt || 'Вы — полезный, вежливый и честный помощник.',
+            model: selectedModel,
+            temperature: state.settings?.aiTemperature ?? 0.7,
+          }),
+        });
+
+        const data = await response.json();
+
+        if (response.ok) {
+          aiText = data.text || 'Пустой ответ от модели.';
+        } else {
+          aiText = `Ошибка GitHub Models: ${data?.message || data?.error || 'Неизвестная ошибка'}`;
+        }
+      } else {
+        const response = await fetch('/api/omni', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text: msgText }),
+        });
+        const data = await response.json();
+
+        if (response.ok) {
+          aiText = data.responses?.[0]?.text || data.reply?.[0]?.text || JSON.stringify(data);
+        } else if (data.error) {
+          aiText = `Ошибка ядра: ${data.error.message || JSON.stringify(data.error)}`;
+        }
       }
+
       dispatch({ type: 'ADD_MSG_TO_SESSION', payload: { sessionId: activeChatId, msg: { role: 'assistant', content: aiText, timestamp: new Date().toISOString(), actions: parseActions(aiText) } } });
     } catch {
       dispatch({ type: 'ADD_MSG_TO_SESSION', payload: { sessionId: activeChatId, msg: { role: 'system', content: 'Ошибка связи с ядром OMNI. Проверьте соединение.', timestamp: new Date().toISOString() } } });
@@ -1155,14 +1182,15 @@ const SettingsView = ({ state, dispatch, onExportVault, onLock, vaultName, stora
               <p className="text-sm text-theme-muted mt-1">Выберите модель для работы с запросами</p>
             </div>
             <select
-              value={state.settings?.aiModel || 'claude-opus-4-8'}
+              value={state.settings?.aiModel || 'openai/gpt-5-chat'}
               onChange={(e) => dispatch({ type: 'UPDATE_SETTINGS', payload: { aiModel: e.target.value } })}
               className="bg-theme-panel border border-theme-border rounded-xl px-4 py-2.5 text-theme-text outline-none focus:border-theme-accent transition-all cursor-pointer shadow-sm"
             >
-              <option value="claude-opus-4-8">Claude Opus 4.8 (Самая мощная)</option>
-              <option value="claude-sonnet-4-6">Claude Sonnet 4.6 (Оптимальная)</option>
-              <option value="claude-haiku-4-5">Claude Haiku 4.5 (Быстрая)</option>
-              <option value="claude-fable-5">Claude Fable 5 (Экспериментальная)</option>
+              <option value="openai/gpt-5-chat">GPT-5 Chat (GitHub Models)</option>
+              <option value="openai/gpt-5-mini">GPT-5 Mini (GitHub Models)</option>
+              <option value="claude-opus-4-8">Claude Opus 4.8 (через OMNI)</option>
+              <option value="claude-sonnet-4-6">Claude Sonnet 4.6 (через OMNI)</option>
+              <option value="claude-haiku-4-5">Claude Haiku 4.5 (через OMNI)</option>
             </select>
           </div>
 

@@ -3,12 +3,23 @@ import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
 import { GoogleAuth } from 'google-auth-library';
+import OpenAI from 'openai';
 import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 
 const app = express();
 const port = 3001;
+
+const githubModelsClient = process.env.GITHUB_TOKEN
+  ? new OpenAI({
+    baseURL: 'https://models.github.ai/inference',
+    apiKey: process.env.GITHUB_TOKEN,
+    defaultQuery: {
+      'api-version': '2024-08-01-preview',
+    },
+  })
+  : null;
 
 app.use(cors());
 app.use(express.json());
@@ -409,6 +420,126 @@ app.post('/api/gemini', async (req, res) => {
   } catch (error) {
     console.error("Ошибка прокси-сервера Gemini:", error);
     res.status(500).json({ error: 'Внутренняя ошибка сервера для прокси Gemini', message: error.message });
+  }
+});
+
+app.post('/api/github-models/chat', async (req, res) => {
+  try {
+    const { prompt, system, model, temperature, top_p } = req.body || {};
+
+    if (!githubModelsClient) {
+      return res.status(500).json({
+        error: 'GitHub Models не настроен',
+        message: 'Добавьте GITHUB_TOKEN в .env',
+      });
+    }
+
+    if (!prompt || typeof prompt !== 'string') {
+      return res.status(400).json({ error: 'Требуется текстовый prompt' });
+    }
+
+    const safeTemperature = typeof temperature === 'number' ? temperature : 0.7;
+    const safeTopP = typeof top_p === 'number' ? top_p : 1;
+    const safeModel = typeof model === 'string' && model.trim() ? model : 'openai/gpt-5-chat';
+
+    const messages = [
+      {
+        role: 'system',
+        content: typeof system === 'string' && system.trim()
+          ? system
+          : 'Ты полезный ассистент. Отвечай кратко и по делу.',
+      },
+      {
+        role: 'user',
+        content: prompt,
+      },
+    ];
+
+    const response = await githubModelsClient.chat.completions.create({
+      model: safeModel,
+      messages,
+      temperature: safeTemperature,
+      top_p: safeTopP,
+    });
+
+    const choice = response.choices?.[0];
+    const text = choice?.message?.content ?? '';
+
+    return res.json({
+      ok: true,
+      model: response.model,
+      text,
+      usage: response.usage || null,
+    });
+  } catch (error) {
+    console.error('GitHub Models proxy error:', error);
+    return res.status(500).json({
+      error: 'Внутренняя ошибка прокси GitHub Models',
+      message: error?.message || 'Unknown error',
+    });
+  }
+});
+
+app.post('/api/github-models/responses', async (req, res) => {
+  try {
+    const { input, instructions, model, temperature, max_output_tokens } = req.body || {};
+
+    if (!githubModelsClient) {
+      return res.status(500).json({
+        error: 'GitHub Models не настроен',
+        message: 'Добавьте GITHUB_TOKEN в .env',
+      });
+    }
+
+    if (!input || typeof input !== 'string') {
+      return res.status(400).json({ error: 'Требуется текстовое поле input' });
+    }
+
+    const safeModel = typeof model === 'string' && model.trim()
+      ? model
+      : 'xai/grok-4.20-non-reasoning';
+
+    const requestBody = {
+      model: safeModel,
+      input,
+    };
+
+    if (typeof instructions === 'string' && instructions.trim()) {
+      requestBody.instructions = instructions;
+    }
+    if (typeof temperature === 'number') {
+      requestBody.temperature = temperature;
+    }
+    if (typeof max_output_tokens === 'number') {
+      requestBody.max_output_tokens = max_output_tokens;
+    }
+
+    const response = await githubModelsClient.responses.create(requestBody);
+
+    let text = response.output_text || '';
+    if (!text && Array.isArray(response.output)) {
+      text = response.output
+        .flatMap((item) => item?.content || [])
+        .filter((part) => part?.type === 'output_text')
+        .map((part) => part?.text || '')
+        .join('\n')
+        .trim();
+    }
+
+    return res.json({
+      ok: true,
+      id: response.id,
+      model: response.model,
+      text,
+      usage: response.usage || null,
+      raw: response,
+    });
+  } catch (error) {
+    console.error('GitHub Models responses proxy error:', error);
+    return res.status(500).json({
+      error: 'Внутренняя ошибка Responses API',
+      message: error?.message || 'Unknown error',
+    });
   }
 });
 

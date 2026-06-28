@@ -8,11 +8,10 @@ import {
   readFromHandle, verifyPermission, rememberHandle, recallHandle, forgetHandle,
 } from './lib/crypto';
 import {
-  googleConfigured, signInWithGoogle, getGoogleProfile, googleSignOut,
+  googleConfigured, signInWithGoogle as signInWithGoogleDrive, getGoogleProfile, googleSignOut,
   listVaultFiles, downloadVaultFile, createVaultOnDrive, updateVaultOnDrive,
 } from './lib/googleDrive';
 import { AnimatePresence } from 'framer-motion';
-import { useAuth } from './components/AuthProviders';
 
 const emptyState = {
   settings: { theme: 'dark', color: '#7c3aed', autoLock: true, lockTimeout: 15 },
@@ -88,8 +87,6 @@ const appReducer = (state, action) => {
 };
 
 function App() {
-  const { user, isAuthenticated, loading: authLoading, error: authError, signInWithGoogle, signOutGoogle } = useAuth();
-
   const [locked, setLocked] = useState(true);
   const [mode, setMode] = useState('create');
   const [hasVault, setHasVault] = useState(false);
@@ -210,7 +207,7 @@ function App() {
   const handleGoogleLogin = async () => {
     setError('');
     try {
-      const token = await signInWithGoogle();
+      const token = await signInWithGoogleDrive();
       const profile = await getGoogleProfile(token);
       setGoogleProfile(profile);
 
@@ -351,7 +348,6 @@ function App() {
     setMode('unlock');
   };
 
-<<<<<<< HEAD
   const handleTelegramLogin = async (telegramUser) => {
     if (!telegramUser?.id) throw new Error('Не удалось получить данные Telegram');
     const telegramPassword = await deriveTelegramPassword(telegramUser);
@@ -362,7 +358,6 @@ function App() {
     }
   };
 
-=======
   const handleLock = () => lockSession({ signOutGoogle: true });
 
   // Список файлов базы на Google Drive (для панели настроек).
@@ -395,7 +390,6 @@ function App() {
     await lockSession({ signOutGoogle: true });
   };
 
->>>>>>> 5c55c7fb812e6b62bc1723ffdc025128bf1d2d2a
   const handleExportVault = async () => {
     if (!password) return;
     try {
@@ -411,25 +405,6 @@ function App() {
   return (
     <div data-theme={state.settings?.theme || 'liwood'} className="min-h-screen bg-theme-bg font-sans text-theme-text overflow-hidden relative transition-colors duration-500">
       <ShaderBG type="noise" color={state.settings?.theme === 'cyberpunk' ? '#06B6D4' : state.settings?.theme === 'dark' ? '#CBA57A' : '#B89B72'} opacity={0.15} />
-
-      {/* New UI for Auth Status */}
-      <div style={{ position: 'absolute', top: 10, right: 10, zIndex: 100, backgroundColor: 'rgba(0,0,0,0.5)', padding: '10px', borderRadius: '5px', color: 'white' }}>
-        {authLoading ? (
-          <p>Loading Auth...</p>
-        ) : isAuthenticated ? (
-          <div>
-            <p>Welcome, {user?.name}!</p>
-            <button onClick={signOutGoogle} style={{ background: '#4CAF50', color: 'white', border: 'none', padding: '5px 10px', borderRadius: '3px', cursor: 'pointer' }}>Sign Out</button>
-          </div>
-        ) : (
-          <div>
-            <p>Not authenticated.</p>
-            <button onClick={signInWithGoogle} style={{ background: '#008CBA', color: 'white', border: 'none', padding: '5px 10px', borderRadius: '3px', cursor: 'pointer' }}>Sign In with Google</button>
-          </div>
-        )}
-        {authError && <p style={{ color: 'red' }}>Auth Error: {authError}</p>}
-      </div>
-      {/* End New UI */}
 
       <AnimatePresence mode="wait">
         {locked ? (
